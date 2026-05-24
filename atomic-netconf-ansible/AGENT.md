@@ -17,11 +17,11 @@ inventory/
 playbooks/
   01_precheck.yml                        # Verify device readiness
   02_baseline_capture.yml                # Capture running config (YANG/XML)
-  03_atomic_push.yml                        # atomic push (YANG/XML)
+  03_atomic_push.yml                     # Atomic push (YANG/XML edit-config, operation=replace)
   04_diff_preview.yml                    # Diff preview (YANG/XML)
-  05_baseline_capture_cli.yml            # Capture running config (CLI text)
-  06_atomic_push_cli.yml                    # atomic push (CLI) — includes before/after capture
-  07_diff_preview_cli.yml                # Diff preview (CLI)
+  05_baseline_capture_cli.yml            # Capture running config (CLI-RPC: get-modelled-config-clis)
+  06_atomic_push_cli.yml                 # Atomic push (CLI-RPC: config-ios-cli-trans) — includes before/after capture
+  07_diff_preview_cli.yml                # Diff preview (CLI-RPC)
 configs/
   baseline/                              # Auto-generated baseline configs
   desired/                               # User-edited desired configs

@@ -1,6 +1,11 @@
 # Atomic Workflow — Step-by-Step Guide
 
-Atomic NETCONF (Atomic Config Replace) for IOS XE 26.1.1+ using Ansible and NETCONF. Two parallel workflows: **CLI text** (recommended) and **YANG/XML**.
+Atomic NETCONF (Atomic Config Replace) for IOS XE 26.1.1+ using Ansible. Two parallel workflows, both delivered over NETCONF:
+
+- **CLI-RPC workflow** (recommended) — IOS CLI text payload sent via the `Cisco-IOS-XE-cli-rpc` YANG model (`config-ios-cli-trans` / `get-modelled-config-clis`).
+- **YANG/XML workflow** — native YANG/XML payload via standard NETCONF `edit-config` with `operation="replace"`.
+
+No SSH/CLI sessions are used — everything runs over NETCONF on port 830.
 
 ---
 
@@ -124,9 +129,9 @@ No edits required for the standard lab environment.
 
 ---
 
-## CLI Workflow (Playbooks 05–07)
+## CLI-RPC Workflow (Playbooks 05–07)
 
-Work with familiar IOS CLI config text. Recommended for most users.
+Work with familiar IOS CLI config text. The payload is sent over NETCONF using the `Cisco-IOS-XE-cli-rpc` YANG model — not via an SSH/CLI session. Recommended for most users.
 
 ```
 01_precheck ──▶ 05_baseline_capture_cli ──▶ Edit desired .cfg ──▶ 07_diff_preview_cli ──▶ 06_atomic_push_cli
@@ -144,7 +149,7 @@ All tasks should show `ok`. If any fail, check the device prerequisites above.
 
 ### Step 2: Capture Baseline
 
-Pull the running config as CLI text:
+Pull the running config as CLI text via the `get-modelled-config-clis` RPC:
 
 ```bash
 ansible-playbook -i inventory/hosts.yml playbooks/05_baseline_capture_cli.yml
@@ -217,7 +222,7 @@ Expected: `Desired matches running (no diff)`
 
 ## YANG/XML Workflow (Playbooks 02–04)
 
-Work with XML config files using standard NETCONF `edit-config` with replace semantics.
+Work with native YANG/XML config payloads using standard NETCONF `edit-config` with replace semantics. No CLI-RPC is used in this workflow.
 
 ```
 01_precheck ──▶ 02_baseline_capture ──▶ Edit desired .xml ──▶ 04_diff_preview ──▶ 03_atomic_push
@@ -271,18 +276,18 @@ ansible-playbook -i inventory/hosts.yml playbooks/06_atomic_push_cli.yml \
 | # | Playbook | Purpose | Modifies Device? |
 |---|---|---|---|
 | 01 | `01_precheck.yml` | Verify NETCONF, candidate, atomic support | No |
-| 02 | `02_baseline_capture.yml` | Pull running config (XML) | No |
-| 03 | `03_atomic_push.yml` | Atomic via YANG/XML edit-config | Dry run: No / Live: **Yes** |
-| 04 | `04_diff_preview.yml` | Preview changes (XML workflow) | No |
-| 05 | `05_baseline_capture_cli.yml` | Pull running config (CLI text) | No |
-| 06 | `06_atomic_push_cli.yml` | Atomic via CLI RPC (config-ios-cli-trans) | Dry run: No / Live: **Yes** |
-| 07 | `07_diff_preview_cli.yml` | Preview changes (CLI workflow) | No |
+| 02 | `02_baseline_capture.yml` | Pull running config (YANG/XML) | No |
+| 03 | `03_atomic_push.yml` | Atomic replace via YANG/XML `edit-config` | Dry run: No / Live: **Yes** |
+| 04 | `04_diff_preview.yml` | Preview changes (YANG/XML workflow) | No |
+| 05 | `05_baseline_capture_cli.yml` | Pull running config as CLI text via CLI-RPC | No |
+| 06 | `06_atomic_push_cli.yml` | Atomic replace via CLI-RPC (`config-ios-cli-trans`) | Dry run: No / Live: **Yes** |
+| 07 | `07_diff_preview_cli.yml` | Preview changes (CLI-RPC workflow) | No |
 
 ---
 
-## How config-ios-cli-trans Works
+## How the CLI-RPC Workflow Works
 
-The CLI workflow uses two RPCs from the `Cisco-IOS-XE-cli-rpc` YANG model:
+The CLI-RPC workflow uses two RPCs from the `Cisco-IOS-XE-cli-rpc` YANG model (carried over a normal NETCONF session on port 830 — no SSH/CLI session is opened):
 
 - **`get-modelled-config-clis`** — Retrieves the running or candidate config as CLI text
 - **`config-ios-cli-trans`** — Pushes CLI text to the candidate datastore
@@ -319,7 +324,7 @@ All playbooks use `<do-commit>false</do-commit>` so that:
 configs/
   baseline/<hostname>/baseline.cfg       # CLI baseline (don't edit)
   baseline/<hostname>/baseline.xml       # XML baseline (don't edit)
-  desired/<hostname>.cfg                 # CLI working copy (edit for CLI workflow)
+  desired/<hostname>.cfg                 # CLI working copy (edit for CLI-RPC workflow)
   desired/<hostname>.xml                 # XML working copy (edit for XML workflow)
   backups/<hostname>/                    # Auto-generated pre-push backups
 ```

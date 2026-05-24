@@ -1,6 +1,11 @@
 # IOS XE Atomic Config Replace — Ansible Framework
 
-Ansible playbooks for performing **atomic config replace** on Cisco IOS XE devices running **26.1.1+**. Supports both CLI text and YANG/XML workflows.
+Ansible playbooks for performing **atomic config replace** on Cisco IOS XE devices running **26.1.1+**. Supports two parallel workflows that both run over NETCONF:
+
+- **CLI-RPC workflow** (recommended) — send IOS CLI text via the `Cisco-IOS-XE-cli-rpc` YANG model (`config-ios-cli-trans` / `get-modelled-config-clis`).
+- **YANG/XML workflow** — send native YANG/XML via standard NETCONF `edit-config` with `operation="replace"`.
+
+Both workflows use the candidate datastore and atomic commit — no SSH/CLI pushes are involved.
 
 This toolkit (`atomic-netconf-ansible`) replaces the entire device configuration atomically — it either fully succeeds or fully rolls back. No partial config states. No risk of half-applied changes.
 
@@ -167,9 +172,9 @@ atomic-netconf-ansible/
 │   ├── 02_baseline_capture.yml              # Capture running config (YANG/XML)
 │   ├── 03_atomic_push.yml                      # atomic push (YANG/XML)
 │   ├── 04_diff_preview.yml                  # Diff preview (YANG/XML)
-│   ├── 05_baseline_capture_cli.yml          # Capture running config (CLI text)
-│   ├── 06_atomic_push_cli.yml                  # atomic push (CLI) — includes before/after capture
-│   └── 07_diff_preview_cli.yml              # Diff preview (CLI)
+│   ├── 05_baseline_capture_cli.yml          # Capture running config (CLI-RPC: get-modelled-config-clis)
+│   ├── 06_atomic_push_cli.yml               # Atomic push (CLI-RPC: config-ios-cli-trans) — includes before/after capture
+│   └── 07_diff_preview_cli.yml              # Diff preview (CLI-RPC)
 │
 ├── configs/
 │   ├── baseline/<hostname>/baseline.cfg     # Reference configs (auto-generated, don't edit)
@@ -278,20 +283,20 @@ Expected: `Desired matches running (no diff)`
 
 ## Playbook Reference
 
-### CLI Workflow (Recommended)
+### CLI-RPC Workflow (Recommended)
 
-Work with familiar IOS CLI text. Uses `config-ios-cli-trans` and `get-modelled-config-clis` RPCs.
+Work with familiar IOS CLI text — but the payload is delivered over NETCONF using the `Cisco-IOS-XE-cli-rpc` YANG model (`config-ios-cli-trans` to push, `get-modelled-config-clis` to read). No SSH/CLI session is opened against the device.
 
 | # | Playbook | Purpose | Modifies Device? |
 |---|---|---|---|
 | 01 | `01_precheck.yml` | Verify NETCONF, candidate, atomic support | No |
-| 05 | `05_baseline_capture_cli.yml` | Pull running config as CLI text | No |
-| 07 | `07_diff_preview_cli.yml` | Stage to candidate, diff, discard | No |
-| 06 | `06_atomic_push_cli.yml` | Full config replace via CLI RPC | **Dry run: No** / Live: **Yes** |
+| 05 | `05_baseline_capture_cli.yml` | Pull running config as CLI text via CLI-RPC | No |
+| 07 | `07_diff_preview_cli.yml` | Stage to candidate via CLI-RPC, diff, discard | No |
+| 06 | `06_atomic_push_cli.yml` | Full config replace via CLI-RPC | **Dry run: No** / Live: **Yes** |
 
 ### YANG/XML Workflow
 
-Work with XML config files. Uses standard NETCONF `edit-config` with `operation="replace"`.
+Work with native YANG/XML config payloads using standard NETCONF `edit-config` with `operation="replace"`. No CLI-RPC involvement.
 
 | # | Playbook | Purpose | Modifies Device? |
 |---|---|---|---|
