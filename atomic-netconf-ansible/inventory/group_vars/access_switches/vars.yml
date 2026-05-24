@@ -1,0 +1,9 @@
+---
+# =============================================================================
+# Group Vars: access_switches
+# =============================================================================
+#
+# Add group-specific variable overrides here as needed.
+# Connection settings and config paths inherit from group_vars/all/.
+#
+# =============================================================================

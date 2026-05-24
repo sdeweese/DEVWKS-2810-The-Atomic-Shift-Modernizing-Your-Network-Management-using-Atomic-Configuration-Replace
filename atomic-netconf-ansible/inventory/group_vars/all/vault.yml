@@ -1,0 +1,17 @@
+---
+# =============================================================================
+# Device Credentials
+# =============================================================================
+#
+# Default lab pod credentials. Same across all 30 pods.
+#
+# To encrypt (recommended for shared environments):
+#   ansible-vault encrypt inventory/group_vars/all/vault.yml
+#   ansible-vault edit    inventory/group_vars/all/vault.yml
+#
+# When encrypted, append --ask-vault-pass to every ansible-playbook command.
+#
+# =============================================================================
+
+ansible_user: admin
+ansible_password: Cisco123

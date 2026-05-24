@@ -1,0 +1,116 @@
+---
+# =============================================================================
+# Playbook: Pre-Check — Verify Device Readiness for Atomic Config Replace
+# =============================================================================
+#
+# Verifies that each device has:
+#   1. NETCONF connectivity
+#   2. Candidate datastore capability
+#   3. Atomic config support
+#   4. Displays IOS XE version and platform info
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml playbooks/01_precheck.yml
+#
+# =============================================================================
+
+- name: "PRE-CHECK — Verify device readiness for Atomic Config Replace"
+  hosts: iosxe
+  gather_facts: false
+
+  tasks:
+
+    # ── 1. Basic NETCONF connectivity ───────────────────────────────
+    - name: "CHECK | Test NETCONF connectivity"
+      ansible.netcommon.netconf_get:
+        filter: |
+          <native xmlns="http://cisco.com/ns/yang/Cisco-IOS-XE-native">
+            <hostname/>
+          </native>
+        display: xml
+      register: netconf_test
+
+    - name: "CHECK | NETCONF reachable"
+      ansible.builtin.debug:
+        msg: "✅ NETCONF OK — {{ ansible_host }}:{{ ansible_port }}"
+
+    # ── 2. Verify candidate datastore ───────────────────────────────
+    - name: "CHECK | Get NETCONF capabilities"
+      ansible.netcommon.netconf_get:
+        filter: |
+          <netconf-state xmlns="urn:ietf:params:xml:ns:yang:ietf-netconf-monitoring">
+            <capabilities/>
+          </netconf-state>
+        display: xml
+      register: capabilities
+
+    - name: "DEBUG | Show raw capabilities"
+      ansible.builtin.debug:
+        var: capabilities.stdout
+      tags: [debug]
+
+    - name: "CHECK | Candidate datastore enabled"
+      ansible.builtin.assert:
+        that:
+          - "'urn:ietf:params:netconf:capability:candidate' in capabilities.stdout"
+        fail_msg: |
+          ❌ Candidate datastore NOT enabled on {{ inventory_hostname }}!
+          Configure on device:
+            netconf-yang feature candidate-datastore
+        success_msg: "✅ Candidate datastore enabled"
+
+    # ── 3. Verify native model works (already proven by task 1) ────
+    - name: "CHECK | IOS XE native model available"
+      ansible.builtin.assert:
+        that:
+          - "netconf_test.stdout is defined"
+          - "'hostname' in netconf_test.stdout"
+        fail_msg: |
+          ⚠️  IOS XE native model not responding on {{ inventory_hostname }}.
+        success_msg: "✅ IOS XE native YANG model available"
+
+    # ── 4. Platform & version info ──────────────────────────────────
+    - name: "CHECK | Get platform info"
+      ansible.netcommon.netconf_get:
+        filter: |
+          <native xmlns="http://cisco.com/ns/yang/Cisco-IOS-XE-native">
+            <version/>
+            <hostname/>
+          </native>
+        display: xml
+      register: platform_info
+
+    - name: "CHECK | Extract version"
+      ansible.builtin.set_fact:
+        device_version: "{{ platform_info.stdout | regex_search('<version>([^<]+)</version>', '\\1') | default(['unknown']) | first }}"
+        device_hostname: "{{ platform_info.stdout | regex_search('<hostname>([^<]+)</hostname>', '\\1') | default(['unknown']) | first }}"
+
+    - name: "CHECK | Version warning"
+      ansible.builtin.debug:
+        msg: >-
+          ⚠️  {{ inventory_hostname }} runs IOS XE {{ device_version }}.
+          IOS XE 26.1.1+ is recommended — crypto certificates are abstracted
+          from the config model, simplifying atomic operations.
+      when: device_version is version('26.1', '<', strict=false)
+      ignore_errors: true
+
+    # ── Summary ─────────────────────────────────────────────────────
+    - name: "SUMMARY | Pre-check results"
+      ansible.builtin.debug:
+        msg: |
+          ══════════════════════════════════════════════════
+          ✅ {{ inventory_hostname }} — Atomic-Ready
+          ══════════════════════════════════════════════════
+          Hostname:  {{ device_hostname }}
+          IOS XE:    {{ device_version }}
+          NETCONF:   {{ ansible_host }}:{{ ansible_port }}
+
+          Required features:
+            ✅ netconf-yang
+            ✅ candidate-datastore
+            ✅ atomic-config (IOS XE native model)
+
+          Next step:
+            ansible-playbook -i inventory/hosts.yml \
+              playbooks/02_baseline_capture.yml
+          ══════════════════════════════════════════════════

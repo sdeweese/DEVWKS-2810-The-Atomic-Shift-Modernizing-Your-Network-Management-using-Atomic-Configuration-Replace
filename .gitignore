@@ -1,0 +1,38 @@
+# =============================================================================
+# iosxe-atomic-netconf-ansible — .gitignore
+# =============================================================================
+
+# Quarantined / not for publishing (jump-host creds, legacy dev artifacts,
+# demo run logs, etc.). Kept locally for maintainer reference only.
+/internal/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+
+# Ansible
+*.retry
+.vault_pass
+
+# Generated archives (use `git clone` or release artifacts instead)
+*.tgz
+*.tar.gz
+*.zip
+
+# Auto-generated per-run output from the toolkit
+atomic-netconf-ansible/configs/backups/*
+!atomic-netconf-ansible/configs/backups/.gitkeep
+atomic-netconf-ansible/configs/baseline/*
+!atomic-netconf-ansible/configs/baseline/.gitkeep
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+nohup.out

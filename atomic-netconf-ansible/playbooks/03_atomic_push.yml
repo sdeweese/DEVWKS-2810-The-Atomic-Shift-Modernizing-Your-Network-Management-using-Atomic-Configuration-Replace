@@ -1,0 +1,292 @@
+---
+# =============================================================================
+# Playbook: Atomic Config Replace — Push Full Config via NETCONF
+# =============================================================================
+#
+# Core atomic playbook using the candidate datastore workflow:
+#
+#   1. Lock candidate datastore
+#   2. Discard stale candidate changes
+#   3. edit-config → candidate (operation: replace on <native>)
+#   4. Validate candidate
+#   5. Preview candidate as CLI (optional)
+#   6. Commit candidate → running (atomic, all-or-nothing)
+#   7. Unlock candidate
+#   8. Save running → startup
+#
+# Usage:
+#   # Dry run (default — validate + preview, no commit):
+#   ansible-playbook -i inventory/hosts.yml playbooks/03_atomic_push.yml
+#
+#   # Live push:
+#   ansible-playbook -i inventory/hosts.yml playbooks/03_atomic_push.yml \
+#     -e dry_run=false
+#
+#   # Target specific group:
+#   ansible-playbook -i inventory/hosts.yml playbooks/03_atomic_push.yml \
+#     -e dry_run=false --limit access_switches
+#
+# =============================================================================
+
+- name: "atomic — Atomic Config Replace via NETCONF"
+  hosts: iosxe
+  gather_facts: false
+
+  vars:
+    dry_run: true
+    backup_before_push: true
+    save_to_startup: true
+
+  tasks:
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  PHASE 1: PRE-FLIGHT
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "PRE | Verify NETCONF connectivity"
+      ansible.netcommon.netconf_get:
+        filter: |
+          <native xmlns="http://cisco.com/ns/yang/Cisco-IOS-XE-native">
+            <hostname/>
+          </native>
+        display: xml
+      register: preflight_check
+
+    - name: "PRE | Connected"
+      ansible.builtin.debug:
+        msg: "✅ Connected to {{ inventory_hostname }} ({{ ansible_host }}:{{ ansible_port }})"
+
+    - name: "PRE | Check desired config exists"
+      ansible.builtin.stat:
+        path: "{{ config_desired_dir }}/{{ inventory_hostname }}.xml"
+      delegate_to: localhost
+      register: desired_file
+
+    - name: "PRE | Fail if no desired config"
+      ansible.builtin.assert:
+        that:
+          - desired_file.stat.exists
+        fail_msg: |
+          ❌ Desired config not found: configs/desired/{{ inventory_hostname }}.xml
+
+          Capture a baseline first:
+            ansible-playbook -i inventory/hosts.yml playbooks/02_baseline_capture.yml
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  PHASE 2: BACKUP
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "BACKUP | Create backup directory"
+      ansible.builtin.file:
+        path: "{{ config_backup_dir }}/{{ inventory_hostname }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      when: backup_before_push | bool
+
+    - name: "BACKUP | Pull current running config"
+      ansible.netcommon.netconf_get:
+        source: running
+        display: xml
+      register: pre_push_backup
+      when: backup_before_push | bool
+
+    - name: "BACKUP | Save pre-push backup"
+      ansible.builtin.copy:
+        content: "{{ pre_push_backup.stdout }}"
+        dest: "{{ config_backup_dir }}/{{ inventory_hostname }}/pre_atomic_{{ lookup('pipe', 'date +%Y%m%dT%H%M%S') }}.xml"
+        mode: "0644"
+      delegate_to: localhost
+      when: backup_before_push | bool
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  PHASE 3: LOAD DESIRED CONFIG
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "LOAD | Read desired config"
+      ansible.builtin.slurp:
+        src: "{{ config_desired_dir }}/{{ inventory_hostname }}.xml"
+      delegate_to: localhost
+      register: desired_raw
+
+    - name: "LOAD | Strip XML wrappers"
+      ansible.builtin.set_fact:
+        desired_config_inner: >-
+          {{ desired_raw.content | b64decode
+             | regex_replace('<rpc-reply[^>]*>', '')
+             | regex_replace('</rpc-reply>', '')
+             | regex_replace('<data[^>]*>', '')
+             | regex_replace('</data>', '')
+             | regex_replace('xmlns:nc="[^"]*"', '')
+             | trim }}
+
+    - name: "LOAD | Config size"
+      ansible.builtin.debug:
+        msg: "Desired config: {{ desired_config_inner | length }} characters"
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  PHASE 4: PUSH TO CANDIDATE
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "atomic | Lock candidate datastore"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: lock
+        content: |
+          <target><candidate/></target>
+      register: lock_result
+
+    - name: "atomic | Discard stale candidate changes"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: discard-changes
+
+    - name: "atomic | Push config to candidate (replace)"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: edit-config
+        content: |
+          <target><candidate/></target>
+          <default-operation>replace</default-operation>
+          <error-option>rollback-on-error</error-option>
+          <config>
+            {{ desired_config_inner }}
+          </config>
+      register: edit_result
+
+    - name: "atomic | Staged in candidate"
+      ansible.builtin.debug:
+        msg: "{{ '✅ Config staged' if edit_result is not failed else '❌ Edit-config FAILED' }}"
+
+    - name: "atomic | Validate candidate"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: validate
+        content: |
+          <source><candidate/></source>
+      register: validate_result
+
+    - name: "atomic | Validation passed"
+      ansible.builtin.debug:
+        msg: "✅ Candidate validated"
+
+    # ── CLI Preview ─────────────────────────────────────────────────
+    - name: "PREVIEW | Get CLI preview of candidate"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "http://cisco.com/ns/yang/Cisco-IOS-XE-cli-preview-rpc"
+        rpc: candidate-preview
+      register: cli_preview
+      ignore_errors: true
+
+    - name: "PREVIEW | CLI diff"
+      ansible.builtin.debug:
+        msg: |
+          ══════════════════════════════════════════════════
+          📋 CANDIDATE PREVIEW (CLI representation)
+          ══════════════════════════════════════════════════
+          {{ cli_preview.stdout | default('Preview not available') }}
+      when: cli_preview is not failed
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  DRY RUN: Discard and stop
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "DRY-RUN | Discard candidate"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: discard-changes
+      when: dry_run | bool
+
+    - name: "DRY-RUN | Unlock candidate"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: unlock
+        content: |
+          <target><candidate/></target>
+      when: dry_run | bool
+
+    - name: "DRY-RUN | Summary"
+      ansible.builtin.debug:
+        msg: |
+          ══════════════════════════════════════════════════
+          🔍 DRY RUN — {{ inventory_hostname }}
+          ══════════════════════════════════════════════════
+          Validation: {{ '✅ PASSED' if validate_result is not failed else '❌ FAILED' }}
+          Candidate discarded — no changes applied.
+
+          To apply for real:
+            ansible-playbook -i inventory/hosts.yml \
+              playbooks/03_atomic_push.yml -e dry_run=false
+          ══════════════════════════════════════════════════
+      when: dry_run | bool
+
+    - name: "DRY-RUN | End play"
+      ansible.builtin.meta: end_play
+      when: dry_run | bool
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  COMMIT — candidate → running (ATOMIC)
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "atomic | Commit candidate → running"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: commit
+      register: commit_result
+
+    - name: "atomic | Unlock candidate"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: unlock
+        content: |
+          <target><candidate/></target>
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  POST-VALIDATION
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "POST | Verify device reachable"
+      ansible.netcommon.netconf_get:
+        filter: |
+          <native xmlns="http://cisco.com/ns/yang/Cisco-IOS-XE-native">
+            <hostname/>
+          </native>
+        display: xml
+      register: post_check
+
+    - name: "POST | Device responds"
+      ansible.builtin.debug:
+        msg: "✅ {{ inventory_hostname }} responds after atomic commit"
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  SAVE TO STARTUP
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "SAVE | Write running → startup"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "http://cisco.com/yang/cisco-ia"
+        rpc: save-config
+      register: save_result
+      when:
+        - save_to_startup | bool
+        - commit_result is not failed
+
+    - name: "SAVE | Result"
+      ansible.builtin.debug:
+        msg: "{{ '✅ Saved to startup' if save_result is not failed else '⚠️ Save failed — running config active but not persisted' }}"
+      when: save_to_startup | bool
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  SUMMARY
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "DONE | Summary"
+      ansible.builtin.debug:
+        msg: |
+          ══════════════════════════════════════════════════
+          Atomic Config Replace — {{ inventory_hostname }}
+          ══════════════════════════════════════════════════
+          atomic: {{ '✅ COMMITTED' if commit_result is not failed else '❌ FAILED' }}
+          Saved:  {{ '✅ startup' if save_to_startup | bool else '⏭️ skipped' }}
+          Backup: configs/backups/{{ inventory_hostname }}/
+          ══════════════════════════════════════════════════

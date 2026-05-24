@@ -1,0 +1,382 @@
+---
+# =============================================================================
+# Playbook: Atomic Config Replace (CLI) — Full Replace via CLI RPC
+# =============================================================================
+#
+# CLI-based atomic using config-ios-cli-trans with full-replace semantics.
+#
+# Uses <do-commit>false</do-commit> to stage to candidate ONLY, leaving
+# running untouched until an explicit commit. This enables safe dry-run
+# (stage → diff → discard) and controlled push (stage → diff → commit).
+#
+# The <do-commit> leaf is a YANG boolean (default: true). When true (or
+# omitted), config-ios-cli-trans auto-commits candidate → running. Setting
+# it to false keeps changes in candidate only, matching atomic-v1.py pattern.
+#
+# Flow:
+#   1. Backup current running config
+#   2. Stage desired CLI to candidate (do-commit=false, full-replace)
+#   3. Diff candidate vs running (CLI text)
+#   4. Dry run: discard and stop  /  Live: commit → save
+#
+# Usage:
+#   # Dry run (default — stage, diff, discard):
+#   ansible-playbook -i inventory/hosts.yml playbooks/06_atomic_push_cli.yml
+#
+#   # Live push:
+#   ansible-playbook -i inventory/hosts.yml playbooks/06_atomic_push_cli.yml \
+#     -e dry_run=false
+#
+# =============================================================================
+
+- name: "Atomic (CLI) — Atomic Config Replace via CLI RPC"
+  hosts: iosxe
+  gather_facts: false
+
+  vars:
+    dry_run: true
+    save_to_startup: true
+    backup_before_push: true
+
+  tasks:
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  PRE-FLIGHT
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "PRE | Verify NETCONF connectivity"
+      ansible.netcommon.netconf_get:
+        filter: |
+          <native xmlns="http://cisco.com/ns/yang/Cisco-IOS-XE-native">
+            <hostname/>
+          </native>
+        display: xml
+      register: preflight_check
+
+    - name: "PRE | Connected"
+      ansible.builtin.debug:
+        msg: "✅ Connected to {{ inventory_hostname }} ({{ ansible_host }}:{{ ansible_port }})"
+
+    - name: "PRE | Check desired CLI config exists"
+      ansible.builtin.stat:
+        path: "{{ config_desired_dir }}/{{ inventory_hostname }}.cfg"
+      delegate_to: localhost
+      register: desired_file
+
+    - name: "PRE | Fail if no desired CLI config"
+      ansible.builtin.assert:
+        that:
+          - desired_file.stat.exists
+        fail_msg: |
+          ❌ Desired CLI config not found: configs/desired/{{ inventory_hostname }}.cfg
+
+          Capture a CLI baseline first:
+            ansible-playbook -i inventory/hosts.yml playbooks/05_baseline_capture_cli.yml
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  BACKUP
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "BACKUP | Create backup directory"
+      ansible.builtin.file:
+        path: "{{ config_backup_dir }}/{{ inventory_hostname }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      when: backup_before_push | bool
+
+    - name: "BACKUP | Pull current running CLI"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "http://cisco.com/ns/yang/Cisco-IOS-XE-cli-rpc"
+        rpc: get-modelled-config-clis
+        content: |
+          <datastore>running</datastore>
+      register: backup_cli_raw
+      when: backup_before_push | bool
+
+    - name: "BACKUP | Extract CLI text"
+      ansible.builtin.set_fact:
+        backup_cli: >-
+          {{ backup_cli_raw.stdout
+             | regex_replace('<rpc-reply[^>]*>', '')
+             | regex_replace('</rpc-reply>', '')
+             | regex_replace('<result[^>]*>', '')
+             | regex_replace('</result>', '')
+             | trim }}
+      when: backup_before_push | bool
+
+    - name: "BACKUP | Save pre-push CLI backup"
+      ansible.builtin.copy:
+        content: "{{ backup_cli }}"
+        dest: "{{ config_backup_dir }}/{{ inventory_hostname }}/pre_atomic_{{ lookup('pipe', 'date +%Y%m%dT%H%M%S') }}.cfg"
+        mode: "0644"
+      delegate_to: localhost
+      when: backup_before_push | bool
+
+    - name: "BEFORE | Running config (via get-modelled-config-clis)"
+      ansible.builtin.debug:
+        msg: "{{ backup_cli.split('\n') }}"
+      when: backup_before_push | bool
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  LOAD DESIRED CLI CONFIG
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "LOAD | Read desired CLI config"
+      ansible.builtin.slurp:
+        src: "{{ config_desired_dir }}/{{ inventory_hostname }}.cfg"
+      delegate_to: localhost
+      register: desired_raw
+
+    - name: "LOAD | Decode CLI content"
+      ansible.builtin.set_fact:
+        desired_cli: "{{ desired_raw.content | b64decode }}"
+
+    - name: "LOAD | Config size"
+      ansible.builtin.debug:
+        msg: "Desired CLI config: {{ desired_cli | length }} characters"
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  STAGE TO CANDIDATE (full-replace, no auto-commit)
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "atomic | Discard stale candidate changes"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: discard-changes
+
+    - name: "atomic | Stage CLI to candidate (full-replace, do-commit=false)"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "http://cisco.com/ns/yang/Cisco-IOS-XE-cli-rpc"
+        rpc: config-ios-cli-trans
+        content: |
+          <clis>{{ desired_cli }}</clis>
+          <operation>full-replace</operation>
+          <do-commit>false</do-commit>
+      register: stage_result
+
+    - name: "atomic | Staged in candidate"
+      ansible.builtin.debug:
+        msg: "✅ Full CLI config staged in candidate (running NOT modified)"
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  DIFF: CANDIDATE vs RUNNING (CLI text)
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "DIFF | Get candidate config as CLI"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "http://cisco.com/ns/yang/Cisco-IOS-XE-cli-rpc"
+        rpc: get-modelled-config-clis
+        content: |
+          <datastore>candidate</datastore>
+      register: candidate_cli_raw
+
+    - name: "DIFF | Get running config as CLI"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "http://cisco.com/ns/yang/Cisco-IOS-XE-cli-rpc"
+        rpc: get-modelled-config-clis
+        content: |
+          <datastore>running</datastore>
+      register: running_cli_raw
+
+    - name: "DIFF | Extract CLI text"
+      ansible.builtin.set_fact:
+        candidate_cli: >-
+          {{ candidate_cli_raw.stdout
+             | regex_replace('<rpc-reply[^>]*>', '')
+             | regex_replace('</rpc-reply>', '')
+             | regex_replace('<result[^>]*>', '')
+             | regex_replace('</result>', '')
+             | trim }}
+        running_cli: >-
+          {{ running_cli_raw.stdout
+             | regex_replace('<rpc-reply[^>]*>', '')
+             | regex_replace('</rpc-reply>', '')
+             | regex_replace('<result[^>]*>', '')
+             | regex_replace('</result>', '')
+             | trim }}
+
+    # Write to temp files for diff
+    - name: "DIFF | Write running CLI to temp"
+      ansible.builtin.copy:
+        content: "{{ running_cli }}"
+        dest: "/tmp/atomic_running_{{ inventory_hostname }}.cfg"
+        mode: "0644"
+      delegate_to: localhost
+
+    - name: "DIFF | Write candidate CLI to temp"
+      ansible.builtin.copy:
+        content: "{{ candidate_cli }}"
+        dest: "/tmp/atomic_candidate_{{ inventory_hostname }}.cfg"
+        mode: "0644"
+      delegate_to: localhost
+
+    - name: "DIFF | Compare running vs candidate"
+      ansible.builtin.command:
+        cmd: >
+          diff --unified=3
+          /tmp/atomic_running_{{ inventory_hostname }}.cfg
+          /tmp/atomic_candidate_{{ inventory_hostname }}.cfg
+      delegate_to: localhost
+      register: cli_diff
+      changed_when: cli_diff.rc == 1
+      failed_when: cli_diff.rc > 1
+
+    - name: "DIFF | Save diff to file"
+      ansible.builtin.copy:
+        content: |
+          ══════════════════════════════════════════════════
+          {{ inventory_hostname }} — RUNNING vs CANDIDATE (CLI diff)
+          ══════════════════════════════════════════════════
+          {{ cli_diff.stdout }}
+        dest: "/tmp/atomic_diff_{{ inventory_hostname }}.txt"
+        mode: "0644"
+      delegate_to: localhost
+      when: cli_diff.rc == 1
+
+    - name: "DIFF | Display diff"
+      ansible.builtin.command:
+        cmd: cat /tmp/atomic_diff_{{ inventory_hostname }}.txt
+      delegate_to: localhost
+      register: diff_display
+      changed_when: false
+      when: cli_diff.rc == 1
+
+    - name: "DIFF | Changes detected"
+      ansible.builtin.debug:
+        msg: "{{ diff_display.stdout_lines }}"
+      when: cli_diff.rc == 1
+
+    - name: "DIFF | No changes"
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} — Candidate matches running (no diff)"
+      when: cli_diff.rc == 0
+
+    - name: "DIFF | Clean up temp files"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      delegate_to: localhost
+      loop:
+        - "/tmp/atomic_running_{{ inventory_hostname }}.cfg"
+        - "/tmp/atomic_candidate_{{ inventory_hostname }}.cfg"
+        - "/tmp/atomic_diff_{{ inventory_hostname }}.txt"
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  DRY RUN: Discard and stop
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "DRY-RUN | Discard candidate"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: discard-changes
+      when: dry_run | bool
+
+    - name: "DRY-RUN | Summary"
+      ansible.builtin.debug:
+        msg: |
+          ══════════════════════════════════════════════════
+          🔍 DRY RUN — {{ inventory_hostname }}
+          ══════════════════════════════════════════════════
+          CLI config was staged in candidate (full-replace)
+          and diffed against running. Candidate discarded.
+
+          To apply for real:
+            ansible-playbook -i inventory/hosts.yml \
+              playbooks/06_atomic_push_cli.yml -e dry_run=false
+          ══════════════════════════════════════════════════
+      when: dry_run | bool
+
+    - name: "DRY-RUN | End play"
+      ansible.builtin.meta: end_play
+      when: dry_run | bool
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  COMMIT — candidate → running (ATOMIC)
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "atomic | Commit candidate → running"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: commit
+      register: commit_result
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  POST-VALIDATION
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "POST | Verify device reachable"
+      ansible.netcommon.netconf_get:
+        filter: |
+          <native xmlns="http://cisco.com/ns/yang/Cisco-IOS-XE-native">
+            <hostname/>
+          </native>
+        display: xml
+      register: post_check
+
+    - name: "POST | Device responds"
+      ansible.builtin.debug:
+        msg: "✅ {{ inventory_hostname }} responds after atomic commit"
+
+    - name: "AFTER | Pull post-commit running CLI (get-modelled-config-clis)"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "http://cisco.com/ns/yang/Cisco-IOS-XE-cli-rpc"
+        rpc: get-modelled-config-clis
+        content: |
+          <datastore>running</datastore>
+      register: after_cli_raw
+
+    - name: "AFTER | Extract CLI text"
+      ansible.builtin.set_fact:
+        after_cli: >-
+          {{ after_cli_raw.stdout
+             | regex_replace('<rpc-reply[^>]*>', '')
+             | regex_replace('</rpc-reply>', '')
+             | regex_replace('<result[^>]*>', '')
+             | regex_replace('</result>', '')
+             | trim }}
+
+    - name: "AFTER | Save post-commit CLI"
+      ansible.builtin.copy:
+        content: "{{ after_cli }}"
+        dest: "{{ config_backup_dir }}/{{ inventory_hostname }}/post_atomic_{{ lookup('pipe', 'date +%Y%m%dT%H%M%S') }}.cfg"
+        mode: "0644"
+      delegate_to: localhost
+
+    - name: "AFTER | Running config (via get-modelled-config-clis)"
+      ansible.builtin.debug:
+        msg: "{{ after_cli.split('\n') }}"
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  SAVE TO STARTUP
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "SAVE | Write running → startup"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "http://cisco.com/yang/cisco-ia"
+        rpc: save-config
+      register: save_result
+      when:
+        - save_to_startup | bool
+        - commit_result is not failed
+
+    - name: "SAVE | Result"
+      ansible.builtin.debug:
+        msg: "{{ '✅ Saved to startup' if save_result is not failed else '⚠️ Save failed' }}"
+      when: save_to_startup | bool
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  SUMMARY
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "DONE | Summary"
+      ansible.builtin.debug:
+        msg: |
+          ══════════════════════════════════════════════════
+          Atomic Config Replace (CLI) — {{ inventory_hostname }}
+          ══════════════════════════════════════════════════
+          Method: config-ios-cli-trans (full-replace)
+          atomic: {{ '✅ COMMITTED' if commit_result is not failed else '❌ FAILED' }}
+          Saved:  {{ '✅ startup' if save_to_startup | bool else '⏭️ skipped' }}
+          Backup: configs/backups/{{ inventory_hostname }}/
+          ══════════════════════════════════════════════════

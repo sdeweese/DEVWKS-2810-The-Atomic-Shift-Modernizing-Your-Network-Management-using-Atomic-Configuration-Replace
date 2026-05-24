@@ -1,0 +1,20 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Ansible
+*.retry
+
+# Temp files
+/tmp/
+*.log
+nohup.out
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Vault (encrypted version is safe to commit; plaintext is not)
+# Uncomment if you do NOT encrypt your vault:
+# inventory/group_vars/all/vault.yml

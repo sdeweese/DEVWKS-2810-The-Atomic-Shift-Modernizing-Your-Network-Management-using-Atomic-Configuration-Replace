@@ -1,0 +1,135 @@
+---
+# =============================================================================
+# Playbook: Diff Preview — See What atomic Would Change (Read-Only)
+# =============================================================================
+#
+# Stages the desired config into the candidate datastore, runs the
+# candidate-preview RPC to show a CLI diff, then discards. The running
+# config is never modified.
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml playbooks/04_diff_preview.yml
+#
+#   # Target one device:
+#   ansible-playbook -i inventory/hosts.yml playbooks/04_diff_preview.yml \
+#     --limit switch-access-01
+#
+# =============================================================================
+
+- name: "DIFF PREVIEW — Show candidate vs running (read-only)"
+  hosts: iosxe
+  gather_facts: false
+
+  tasks:
+
+    # ── Pre-flight ──────────────────────────────────────────────────
+    - name: "PRE | Check desired config exists"
+      ansible.builtin.stat:
+        path: "{{ config_desired_dir }}/{{ inventory_hostname }}.xml"
+      delegate_to: localhost
+      register: desired_stat
+
+    - name: "PRE | Fail if no desired config"
+      ansible.builtin.assert:
+        that:
+          - desired_stat.stat.exists
+        fail_msg: |
+          ❌ No desired config: configs/desired/{{ inventory_hostname }}.xml
+          Run baseline capture first:
+            ansible-playbook -i inventory/hosts.yml playbooks/02_baseline_capture.yml
+
+    # ── Load desired config ─────────────────────────────────────────
+    - name: "LOAD | Read desired config"
+      ansible.builtin.slurp:
+        src: "{{ config_desired_dir }}/{{ inventory_hostname }}.xml"
+      delegate_to: localhost
+      register: desired_raw
+
+    - name: "LOAD | Strip XML wrappers"
+      ansible.builtin.set_fact:
+        desired_inner: >-
+          {{ desired_raw.content | b64decode
+             | regex_replace('<rpc-reply[^>]*>', '')
+             | regex_replace('</rpc-reply>', '')
+             | regex_replace('<data[^>]*>', '')
+             | regex_replace('</data>', '')
+             | regex_replace('xmlns:nc="[^"]*"', '')
+             | trim }}
+
+    # ── Stage to candidate (no commit) ──────────────────────────────
+    - name: "STAGE | Lock candidate"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: lock
+        content: |
+          <target><candidate/></target>
+
+    - name: "STAGE | Discard stale changes"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: discard-changes
+
+    - name: "STAGE | Push desired to candidate (replace)"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: edit-config
+        content: |
+          <target><candidate/></target>
+          <default-operation>replace</default-operation>
+          <error-option>rollback-on-error</error-option>
+          <config>
+            {{ desired_inner }}
+          </config>
+      register: stage_result
+
+    - name: "STAGE | Validate candidate"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: validate
+        content: |
+          <source><candidate/></source>
+      register: validate_result
+
+    # ── CLI Preview ─────────────────────────────────────────────────
+    - name: "PREVIEW | Get CLI diff"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "http://cisco.com/ns/yang/Cisco-IOS-XE-cli-preview-rpc"
+        rpc: candidate-preview
+      register: cli_preview
+      ignore_errors: true
+
+    - name: "PREVIEW | Show diff"
+      ansible.builtin.debug:
+        msg: |
+          ══════════════════════════════════════════════════
+          📋 {{ inventory_hostname }} — Candidate vs Running
+          ══════════════════════════════════════════════════
+          Validation: {{ '✅ PASSED' if validate_result is not failed else '❌ FAILED' }}
+          ══════════════════════════════════════════════════
+          {{ cli_preview.stdout | default('candidate-preview RPC not available on this platform') }}
+      when: cli_preview is not failed
+
+    - name: "PREVIEW | No changes detected"
+      ansible.builtin.debug:
+        msg: "✅ {{ inventory_hostname }} — Desired matches running config (no diff)"
+      when:
+        - cli_preview is not failed
+        - cli_preview.stdout is defined
+        - cli_preview.stdout | trim | length < 100
+
+    # ── Discard and unlock ──────────────────────────────────────────
+    - name: "CLEANUP | Discard candidate"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: discard-changes
+
+    - name: "CLEANUP | Unlock candidate"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: unlock
+        content: |
+          <target><candidate/></target>
+
+    - name: "DONE | Read-only preview complete"
+      ansible.builtin.debug:
+        msg: "🔄 {{ inventory_hostname }} — Candidate discarded, device untouched"

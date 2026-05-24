@@ -1,0 +1,26 @@
+---
+# =============================================================================
+# Connection & Path Settings — All IOS XE Devices
+# =============================================================================
+#
+# These settings apply to every device in the iosxe group. Override per-host
+# or per-group in host_vars/ or group-specific group_vars/ as needed.
+#
+# =============================================================================
+
+# --- NETCONF Connection ---
+ansible_connection: ansible.netcommon.netconf
+ansible_network_os: cisco.ios.ios
+ansible_port: 830
+
+# --- Timeouts ---
+ansible_command_timeout: 300     # Per-RPC timeout (large XML replace needs time)
+ansible_connect_timeout: 60      # NETCONF session establishment
+
+# --- NETCONF Behavior ---
+netconf_lock: always
+
+# --- Config Paths (relative to playbook_dir) ---
+config_backup_dir: "{{ playbook_dir }}/../configs/backups"
+config_baseline_dir: "{{ playbook_dir }}/../configs/baseline"
+config_desired_dir: "{{ playbook_dir }}/../configs/desired"

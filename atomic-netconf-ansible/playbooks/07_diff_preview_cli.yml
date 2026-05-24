@@ -1,0 +1,196 @@
+---
+# =============================================================================
+# Playbook: Diff Preview (CLI) — Stage to candidate, diff, then discard
+# =============================================================================
+#
+# Safe preview using config-ios-cli-trans with <do-commit>false</do-commit>
+# to stage the desired CLI into the candidate datastore WITHOUT touching
+# running. Diffs candidate vs running CLI text, then discards the candidate.
+#
+# The <do-commit>false</do-commit> flag (YANG leaf, type boolean) prevents
+# the automatic commit that config-ios-cli-trans performs by default.
+# This gives an accurate on-device diff that accounts for YANG normalization.
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml playbooks/07_diff_preview_cli.yml
+#
+#   # Target one device:
+#   ansible-playbook -i inventory/hosts.yml playbooks/07_diff_preview_cli.yml \
+#     --limit switch-01
+#
+# =============================================================================
+
+- name: "DIFF PREVIEW (CLI) — Stage to candidate, diff, discard"
+  hosts: iosxe
+  gather_facts: false
+
+  tasks:
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  PRE-FLIGHT
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "PRE | Check desired CLI config exists"
+      ansible.builtin.stat:
+        path: "{{ config_desired_dir }}/{{ inventory_hostname }}.cfg"
+      delegate_to: localhost
+      register: desired_stat
+
+    - name: "PRE | Fail if no desired CLI config"
+      ansible.builtin.assert:
+        that:
+          - desired_stat.stat.exists
+        fail_msg: |
+          ❌ No desired CLI config: configs/desired/{{ inventory_hostname }}.cfg
+          Run CLI baseline capture first:
+            ansible-playbook -i inventory/hosts.yml playbooks/05_baseline_capture_cli.yml
+
+    - name: "PRE | Load desired CLI config"
+      ansible.builtin.slurp:
+        src: "{{ config_desired_dir }}/{{ inventory_hostname }}.cfg"
+      delegate_to: localhost
+      register: desired_raw
+
+    - name: "PRE | Decode CLI content"
+      ansible.builtin.set_fact:
+        desired_cli: "{{ desired_raw.content | b64decode }}"
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  STAGE TO CANDIDATE (candidate only — running is NOT touched)
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "STAGE | Discard stale candidate changes"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: discard-changes
+
+    - name: "STAGE | Push desired CLI to candidate (do-commit=false)"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "http://cisco.com/ns/yang/Cisco-IOS-XE-cli-rpc"
+        rpc: config-ios-cli-trans
+        content: |
+          <clis>{{ desired_cli }}</clis>
+          <operation>full-replace</operation>
+          <do-commit>false</do-commit>
+      register: stage_result
+
+    - name: "STAGE | Desired config staged in candidate"
+      ansible.builtin.debug:
+        msg: "✅ Staged to candidate (running NOT modified)"
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  DIFF: CANDIDATE vs RUNNING (CLI text)
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "DIFF | Get candidate config as CLI"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "http://cisco.com/ns/yang/Cisco-IOS-XE-cli-rpc"
+        rpc: get-modelled-config-clis
+        content: |
+          <datastore>candidate</datastore>
+      register: candidate_cli_raw
+
+    - name: "DIFF | Get running config as CLI"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "http://cisco.com/ns/yang/Cisco-IOS-XE-cli-rpc"
+        rpc: get-modelled-config-clis
+        content: |
+          <datastore>running</datastore>
+      register: running_cli_raw
+
+    - name: "DIFF | Extract CLI text"
+      ansible.builtin.set_fact:
+        candidate_cli_text: >-
+          {{ candidate_cli_raw.stdout
+             | regex_replace('<rpc-reply[^>]*>', '')
+             | regex_replace('</rpc-reply>', '')
+             | regex_replace('<result[^>]*>', '')
+             | regex_replace('</result>', '')
+             | trim }}
+        running_cli_text: >-
+          {{ running_cli_raw.stdout
+             | regex_replace('<rpc-reply[^>]*>', '')
+             | regex_replace('</rpc-reply>', '')
+             | regex_replace('<result[^>]*>', '')
+             | regex_replace('</result>', '')
+             | trim }}
+
+    - name: "DIFF | Write running CLI to temp"
+      ansible.builtin.copy:
+        content: "{{ running_cli_text }}"
+        dest: "/tmp/atomic_running_{{ inventory_hostname }}.cfg"
+        mode: "0644"
+      delegate_to: localhost
+
+    - name: "DIFF | Write candidate CLI to temp"
+      ansible.builtin.copy:
+        content: "{{ candidate_cli_text }}"
+        dest: "/tmp/atomic_candidate_{{ inventory_hostname }}.cfg"
+        mode: "0644"
+      delegate_to: localhost
+
+    - name: "DIFF | Compare running vs candidate"
+      ansible.builtin.command:
+        cmd: >
+          diff --unified=3
+          /tmp/atomic_running_{{ inventory_hostname }}.cfg
+          /tmp/atomic_candidate_{{ inventory_hostname }}.cfg
+      delegate_to: localhost
+      register: cli_diff
+      changed_when: cli_diff.rc == 1
+      failed_when: cli_diff.rc > 1
+
+    - name: "DIFF | Save diff to file"
+      ansible.builtin.copy:
+        content: |
+          ══════════════════════════════════════════════════
+          {{ inventory_hostname }} — RUNNING vs CANDIDATE (CLI diff)
+          ══════════════════════════════════════════════════
+          {{ cli_diff.stdout }}
+        dest: "/tmp/atomic_diff_{{ inventory_hostname }}.txt"
+        mode: "0644"
+      delegate_to: localhost
+      when: cli_diff.rc == 1
+
+    - name: "DIFF | Display diff"
+      ansible.builtin.command:
+        cmd: cat /tmp/atomic_diff_{{ inventory_hostname }}.txt
+      delegate_to: localhost
+      register: diff_display
+      changed_when: false
+      when: cli_diff.rc == 1
+
+    - name: "DIFF | Changes detected"
+      ansible.builtin.debug:
+        msg: "{{ diff_display.stdout_lines }}"
+      when: cli_diff.rc == 1
+
+    - name: "DIFF | No changes"
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} — Desired matches running (no diff)"
+      when: cli_diff.rc == 0
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  DISCARD & CLEAN UP
+    # ═══════════════════════════════════════════════════════════════════
+
+    - name: "CLEANUP | Discard candidate changes"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: discard-changes
+
+    - name: "CLEANUP | Remove temp files"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      delegate_to: localhost
+      loop:
+        - "/tmp/atomic_running_{{ inventory_hostname }}.cfg"
+        - "/tmp/atomic_candidate_{{ inventory_hostname }}.cfg"
+        - "/tmp/atomic_diff_{{ inventory_hostname }}.txt"
+
+    - name: "DONE | Preview complete"
+      ansible.builtin.debug:
+        msg: |
+          🔒 {{ inventory_hostname }} — Preview complete, candidate discarded.
+          Running config was NOT modified.

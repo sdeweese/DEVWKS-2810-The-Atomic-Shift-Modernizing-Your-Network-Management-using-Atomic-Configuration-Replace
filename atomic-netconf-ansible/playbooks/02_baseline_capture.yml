@@ -1,0 +1,115 @@
+---
+# =============================================================================
+# Playbook: Baseline Capture — Pull Running Config via NETCONF
+# =============================================================================
+#
+# Pulls the full running-config from each device and saves it as both the
+# baseline reference and the starting desired config for atomic edits.
+#
+# On IOS XE 26.1.1+, crypto certificates are abstracted out of the native
+# config model — no filtering or special handling is required. The full
+# <native> config is safe to capture and use for atomic config replace.
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml playbooks/02_baseline_capture.yml
+#
+# Output (per device):
+#   configs/baseline/<hostname>/baseline.xml  — canonical reference
+#   configs/desired/<hostname>.xml            — working copy (edit this)
+#   configs/backups/<hostname>/backup_<ts>.xml — timestamped backup
+#
+# =============================================================================
+
+- name: "BASELINE CAPTURE — Pull running config from devices"
+  hosts: iosxe
+  gather_facts: false
+
+  tasks:
+
+    # ── Create directory structure ──────────────────────────────────
+    - name: "DIRS | Create config directories"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      loop:
+        - "{{ config_baseline_dir }}/{{ inventory_hostname }}"
+        - "{{ config_desired_dir }}"
+        - "{{ config_backup_dir }}/{{ inventory_hostname }}"
+
+    # ── Pull native running config ──────────────────────────────────
+    - name: "GET | Pull native running-config via NETCONF"
+      ansible.netcommon.netconf_rpc:
+        xmlns: "urn:ietf:params:xml:ns:netconf:base:1.0"
+        rpc: get-config
+        content: |
+          <source><running/></source>
+          <filter type="subtree">
+            <native xmlns="http://cisco.com/ns/yang/Cisco-IOS-XE-native"/>
+          </filter>
+      register: running_config
+
+    - name: "GET | Config size"
+      ansible.builtin.debug:
+        msg: "Retrieved {{ running_config.stdout | length }} characters from {{ inventory_hostname }}"
+
+    # ── Save files ──────────────────────────────────────────────────
+    - name: "SAVE | Write baseline (canonical reference)"
+      ansible.builtin.copy:
+        content: "{{ running_config.stdout }}"
+        dest: "{{ config_baseline_dir }}/{{ inventory_hostname }}/baseline.xml"
+        mode: "0644"
+      delegate_to: localhost
+
+    - name: "SAVE | Write desired config (working copy)"
+      ansible.builtin.copy:
+        content: "{{ running_config.stdout }}"
+        dest: "{{ config_desired_dir }}/{{ inventory_hostname }}.xml"
+        mode: "0644"
+      delegate_to: localhost
+
+    - name: "SAVE | Write timestamped backup"
+      ansible.builtin.copy:
+        content: "{{ running_config.stdout }}"
+        dest: "{{ config_backup_dir }}/{{ inventory_hostname }}/backup_{{ lookup('pipe', 'date +%Y%m%dT%H%M%S') }}.xml"
+        mode: "0644"
+      delegate_to: localhost
+
+    # ── Summary ─────────────────────────────────────────────────────
+    - name: "SUMMARY | Baseline capture complete"
+      ansible.builtin.debug:
+        msg: |
+          ══════════════════════════════════════════════════
+          ✅ BASELINE CAPTURED — {{ inventory_hostname }}
+          ══════════════════════════════════════════════════
+
+          Config size: {{ running_config.stdout | length }} characters
+
+          Files:
+            📄 configs/baseline/{{ inventory_hostname }}/baseline.xml
+               └─ Canonical reference (do not edit)
+            📄 configs/desired/{{ inventory_hostname }}.xml
+               └─ YOUR WORKING COPY — edit this file!
+            📄 configs/backups/{{ inventory_hostname }}/
+               └─ Timestamped backup
+
+          ⚠️  The desired config contains ALL physical interfaces
+          as they exist on the device. When editing:
+            - Keep ALL physical interface entries
+            - You can change descriptions, IPs, shutdown state
+            - Do NOT remove interfaces that exist in hardware
+            - You CAN add/remove Loopback, Tunnel, VLAN interfaces
+
+          Next steps:
+            1. Edit configs/desired/{{ inventory_hostname }}.xml
+               with your desired configuration changes
+
+            2. Preview what atomic would change:
+               ansible-playbook -i inventory/hosts.yml \
+                 playbooks/04_diff_preview.yml
+
+            3. Atomic Config Replace (dry run first):
+               ansible-playbook -i inventory/hosts.yml \
+                 playbooks/03_atomic_push.yml
+          ══════════════════════════════════════════════════
