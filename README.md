@@ -8,12 +8,15 @@ all-or-nothing: the entire target configuration is staged in the candidate
 datastore, validated, then committed in a single transaction. If any part of
 the commit fails, the running configuration is left untouched.
 
-Two complementary implementations are included:
+This repository provides an **Ansible toolkit** for atomic config replacement
+on IOS XE 26.1.1+. A standalone Python reference implementation of the same
+pattern lives in a separate repository:
+[**cisco-ios-xe-atomic-config-replace**](https://github.com/jeremycohoe/cisco-ios-xe-atomic-config-replace).
 
-| Path | Implementation | Use when |
-|---|---|---|
-| [`atomic-netconf-ansible/`](atomic-netconf-ansible/) | **Ansible** (recommended) | You want a repeatable, multi-step workflow with preview/diff/commit playbooks |
-| [`python/`](python/) | **Python** (reference) | You want a single-script reference for embedding the same logic into your own automation |
+| What you want | Where to go |
+|---|---|
+| Repeatable Ansible workflow (preview / diff / commit) | This repo — [`atomic-netconf-ansible/`](atomic-netconf-ansible/) |
+| Single-script Python reference to embed in your own automation | [github.com/jeremycohoe/cisco-ios-xe-atomic-config-replace](https://github.com/jeremycohoe/cisco-ios-xe-atomic-config-replace) |
 
 ---
 
@@ -22,8 +25,8 @@ Two complementary implementations are included:
 | Component | Version |
 |---|---|
 | Cisco IOS XE | **26.1.1 or later** |
-| Ansible (for the Ansible toolkit) | 2.15+ |
-| Python (for either toolkit) | 3.10+ |
+| Ansible | 2.15+ |
+| Python | 3.10+ |
 | `ncclient` | 0.6.13+ |
 
 ### One-time device setup
@@ -73,20 +76,6 @@ preview diff → commit.
 
 ---
 
-## Quick start (Python reference)
-
-```bash
-cd python/
-python3 -m venv .venv && source .venv/bin/activate
-pip install ncclient lxml netmiko xmltodict
-# Edit the device IP, username, password near line 254 of acr-v1.py
-python acr-v1.py
-```
-
-The Python script (`acr-v1.py` — kept under its original filename) performs a
-single atomic replace using the contents of `target_config.xml` as the desired
-configuration. It is intended as a minimal reference, not a production tool.
-
 ---
 
 ## Repository layout
@@ -100,11 +89,6 @@ iosxe-atomic-netconf-ansible/
 │   ├── docs/quickstart.md         # Step-by-step user guide
 │   ├── README.md
 │   └── AGENT.md                   # Maintainer notes
-│
-├── python/                        # Python reference implementation
-│   ├── acr-v1.py
-│   ├── target_config.xml          # Example desired config
-│   └── LICENSE                    # MPL 2.0 (original author's choice)
 │
 ├── README.md                      # This file
 ├── LICENSE                        # Apache 2.0
@@ -136,12 +120,10 @@ real switch:
 This project is licensed under the **Apache License, Version 2.0**. See
 [LICENSE](LICENSE) for the full text.
 
-The `python/` subdirectory retains its original **Mozilla Public License 2.0**
-(see [`python/LICENSE`](python/LICENSE)).
-
 ---
 
 ## Related projects
 
-- [`cisco-ios-xe-atomic-config-replace`](https://github.com/jeremycohoe/cisco-ios-xe-atomic-config-replace)
-  — the standalone Python reference, mirrored here under [`python/`](python/).
+- [**cisco-ios-xe-atomic-config-replace**](https://github.com/jeremycohoe/cisco-ios-xe-atomic-config-replace)
+  — standalone Python reference implementation of atomic config replace over
+  NETCONF (single-script, MPL 2.0).
