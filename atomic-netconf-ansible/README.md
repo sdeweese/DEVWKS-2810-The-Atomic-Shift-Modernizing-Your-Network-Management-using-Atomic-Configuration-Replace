@@ -111,9 +111,9 @@ Note: Your instructor will give you a unique pod number, IP, and credentials to 
 
 2. After clicking that button, a pop up should appear at the top of your Visual Studio Code window. Select the "Connect to Host" option from the dropdown menu.
 
-3. SSH to your unique pod using the credentials provided by your instructor in this format `ssh auto@<YOUR_POD_IP>`. Example: `ssh auto@10.1.1.5`
+3. SSH to your unique pod using the credentials provided by your instructor in this format `ssh -p 443 auto@<YOUR_POD_IP>`. Example: `ssh -p 443 auto@10.1.1.5`
 
-4. Navigate to the `atomic-netconf-ansible` directory.
+4. Navigate to the `DEVWKS-2810-The-Atomic-Shift-Modernizing-Your-Network-Management-using-Atomic-Configuration-Replace` directory.
 
    ```bash
    # 1. Clone the repository (this has already been done for you in the lab pod)
@@ -123,8 +123,8 @@ Note: Your instructor will give you a unique pod number, IP, and credentials to 
    # 2. Confirm Ansible is available (lab pods normally ship with it)
    ansible --version
 
-   # 3. Install the required Ansible collections
-   ansible-galaxy collection install -r requirements.yml
+   # 3. Install the required Ansible collections (this has already been done for you in the lab pod)
+   #ansible-galaxy collection install -r requirements.yml
    ```
 
 
@@ -181,7 +181,7 @@ atomic-netconf-ansible/
 
 ## Quick Start
 
-All commands are run from inside the extracted `atomic-netconf-ansible/` directory.
+All commands are run from inside the extracted `DEVWKS-2810-The-Atomic-Shift-Modernizing-Your-Network-Management-using-Atomic-Configuration-Replace/atomic-netconf-ansible/` directory.
 
 ### 1. Inventory & Credentials (Pre-Configured)
 
@@ -290,7 +290,8 @@ See [apply-day-config-readme.md](apply-day-config-readme.md) for full options (`
 
 ```bash
 cd /home/auto/iosxe-atomic-netconf-ansible/atomic-netconf-ansible
-chmod +x apply-day-config.sh
+# Make the script executable (this has been done for you)
+# chmod +x apply-day-config.sh
 ```
 
 ### What you'll see when you run it
