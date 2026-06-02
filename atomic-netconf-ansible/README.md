@@ -111,7 +111,7 @@ Note: Your instructor will give you a unique pod number, IP, and credentials to 
 
 2. After clicking that button, a pop up should appear at the top of your Visual Studio Code window. Select the "Connect to Host" option from the dropdown menu.
 
-3. SSH to your unique pod using the credentials provided by your instructor. Open a new terminal tab (pro tip, split the terminal window within Visual Studio Code to see the Cisco IOS XE device on one side and the workspace for running scripts on the other side) `ssh -p 443 auto@<YOUR_POD_IP>`. Example: `ssh -p 443 auto@128.120.130.140`. Recommended: once you're connected to your switch, type `terminal monitor` to see real-time logs.
+3. SSH to your unique pod using the credentials provided by your instructor. Open a new terminal tab (pro tip, split the terminal window within Visual Studio Code to see the Cisco IOS XE device on one side and the workspace for running scripts on the other side using `ssh auto@10.1.1.5` and `Cisco123` as the password. Recommended: once you're connected to your switch, type `terminal monitor` to see real-time logs.
 
 4. Navigate to the `DEVWKS-2810-The-Atomic-Shift-Modernizing-Your-Network-Management-using-Atomic-Configuration-Replace` directory.
 
@@ -189,13 +189,13 @@ The toolkit ships ready to run in any lab pod:
 
 - **Inventory** (`inventory/hosts.yml`): one host `c9300x-lab` at `10.1.1.5:830`
 - **Credentials** (`inventory/group_vars/all/vault.yml`): `admin` / `Cisco123`
-
+<!-- 
 No edits required for the standard lab environment. If you want to encrypt the vault:
 
 ```bash
 ansible-vault encrypt inventory/group_vars/all/vault.yml
 # then append --ask-vault-pass to every ansible-playbook command
-```
+``` -->
 
 ### 2. Verify Device Readiness
 
@@ -288,6 +288,8 @@ Run [`apply-config-day.sh`](./apply-config-day.sh) `--help` for full options (`-
 
 ### One-time setup
 
+Ensure you are in the correct directory and make the script executable.
+
 ```bash
 cd DEVWKS-2810-The-Atomic-Shift-Modernizing-Your-Network-Management-using-Atomic-Configuration-Replace/atomic-netconf-ansible/
 # Make the script executable (this has been done for you)
@@ -308,10 +310,10 @@ For Day2, type 2
 Please Enter 0, 1, or 2: 1
 
 Starting config replace for Day 1...
+```
 
 
-
-Updated: c9300x-lab.cfg -> POD-13-day1.cfg
+<!-- Updated: c9300x-lab.cfg -> POD-13-day1.cfg
 Running Ansible full-replace playbook...
 Command: ansible-playbook -i inventory/hosts.yml playbooks/06_atomic_push_cli.yml -e dry_run=false
 
@@ -324,8 +326,10 @@ TASK [Commit candidate to running] *********************************************
 changed: [c9300x-lab]
 
 PLAY RECAP *********************************************************************
-c9300x-lab : ok=12   changed=1    unreachable=0    failed=0    skipped=0
+c9300x-lab : ok=12   changed=1    unreachable=0    failed=0    skipped=0 -->
 ```
+
+If you face an error, check the Ansible output for the specific error message. Common issues include syntax errors in the desired config or missing required configuration elements. Use the error message to debug the issue.
 
 If the `PLAY RECAP` line shows `failed=0`, the atomic commit succeeded and the device's running config now matches `POD-13-day1.cfg`.
 
@@ -349,12 +353,53 @@ Result: device is reset to the clean POD baseline. Hostname becomes `cat9300x-po
 # When prompted, enter: 1
 ```
 
-Result: Day-1 deltas are atomically applied on top of the running config. Hostname becomes `cat9300x-day1`, VLANs `311` and `700` are added to the VLAN database, and a block of access ports are moved to `switchport access vlan 311` / `switchport mode access`. Verify on the device:
+Watch the `PLAY RECAP`. If it shows `failed=0`, the day-1 deltas committed cleanly:
+hostname is now `cat9300x-day1`, VLANs `311` and `700` are in the VLAN database, and
+a block of access ports moved to `switchport access vlan 311` /
+`switchport mode access`. Verify on the device:
 
 ```
 show vlan brief | include 311|700
 show running-config | section interface TenGigabit
 ```
+
+#### If Stage 2 fails
+
+If the `PLAY RECAP` instead shows `failed=1`, **the device did not change** — that is
+the atomic guarantee. The candidate config was validated, IOS XE rejected one of the
+lines, and the entire transaction was rolled back before anything touched the running
+config.
+
+Prove it for yourself:
+
+```
+show running-config | include hostname
+```
+
+The hostname is still the day-0 hostname (`cat9300x-pod<id>a-sztp`), not
+`cat9300x-day1`. No VLANs were added, no ports were moved. Nothing landed.
+
+**Read the Ansible failure output** — the error message will quote the exact CLI line
+the device refused, typically with an `% Invalid input` marker or a parser error
+pointing at the bad keyword.
+
+**Fix the desired config:** open `configs/pod-targets/POD-<id>-day1.cfg` (or follow
+the symlink at `configs/desired/c9300x-lab.cfg`), locate the offending line, correct
+or remove it, and save.
+
+> Tip: a quick way to spot what changed in day-1 is to diff against day-0:
+> `diff configs/pod-targets/POD-<id>-day0.cfg configs/pod-targets/POD-<id>-day1.cfg`.
+> One of the new lines is the culprit.
+
+Re-run the push:
+
+```bash
+./apply-config-day.sh
+# When prompted, enter: 1
+```
+
+This time `PLAY RECAP` should show `failed=0`. Re-run the verify commands above to
+confirm the day-1 state is live.
 
 **Stage 3 — Apply Day 2 (add OSPF routing + NTP)**
 
