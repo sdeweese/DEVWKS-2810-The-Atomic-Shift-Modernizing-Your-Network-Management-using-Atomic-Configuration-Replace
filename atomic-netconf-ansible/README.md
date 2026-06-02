@@ -269,6 +269,139 @@ ansible-playbook -i inventory/hosts.yml playbooks/07_diff_preview_cli.yml
 
 Expected: `Desired matches running (no diff)`
 
+---
+
+## Day 0 → Day 1 → Day 2 → Day 0 Cycle with `apply-day-config.sh`
+
+Once your baseline is captured and you're comfortable with the preview/push flow, the lab includes a helper that rotates the active desired config between three checkpoint files and runs the live atomic push for you:
+
+- `configs/desired/POD-<id>-day0.cfg` — clean baseline (starting state)
+- `configs/desired/POD-<id>-day1.cfg` — day-1 additions (e.g., interface descriptions, VLANs)
+- `configs/desired/POD-<id>-day2.cfg` — day-2 additions (e.g., OSPF, extra NTP servers)
+
+Your POD id comes from `cat ~/PODID` (e.g. `POD-13`). The script:
+
+1. Repoints the symlink `configs/desired/c9300x-lab.cfg` → `POD-<id>-day<N>.cfg`
+2. Runs `ansible-playbook -i inventory/hosts.yml playbooks/06_atomic_push_cli.yml -e dry_run=false`
+
+See [apply-day-config-readme.md](apply-day-config-readme.md) for full options (`--list`, `--no-run`).
+
+### One-time setup
+
+```bash
+cd /home/auto/iosxe-atomic-netconf-ansible/atomic-netconf-ansible
+chmod +x apply-day-config.sh
+```
+
+### What you'll see when you run it
+
+The script prints the symlink update, then streams the full `ansible-playbook` output (the same output you'd see running the playbook by hand):
+
+```text
+$ ./apply-day-config.sh
+Detected PODID: POD-13
+Which day would you like to rotate to? (Simply type the number and then press ENTER)
+0) Day0
+1) Day1
+2) Day2
+Please Enter 0, 1, or 2: 1
+Updated: c9300x-lab.cfg -> POD-13-day1.cfg
+Running Ansible full-replace playbook...
+Command: ansible-playbook -i inventory/hosts.yml playbooks/06_atomic_push_cli.yml -e dry_run=false
+
+PLAY [Atomic config push (CLI-RPC)] ********************************************
+TASK [Gathering Facts] *********************************************************
+...
+TASK [Show diff] ***************************************************************
+...
+TASK [Commit candidate to running] *********************************************
+changed: [c9300x-lab]
+
+PLAY RECAP *********************************************************************
+c9300x-lab : ok=12   changed=1    unreachable=0    failed=0    skipped=0
+```
+
+If the `PLAY RECAP` line shows `failed=0`, the atomic commit succeeded and the device's running config now matches `POD-13-day1.cfg`.
+
+### Walk the lifecycle
+
+Run the script once per stage and pick the day at the prompt. After each commit, optionally re-run the diff preview to confirm the device matches the new desired state.
+
+**Stage 1 — Apply Day 0 (baseline)**
+
+```bash
+./apply-day-config.sh
+# When prompted, enter: 0
+```
+
+Result: device is reset to the clean POD baseline. Hostname becomes `cat9300x-day0` (or equivalent for your pod).
+
+**Stage 2 — Apply Day 1 (add interface/VLAN config)**
+
+```bash
+./apply-day-config.sh
+# When prompted, enter: 1
+```
+
+Result: Day-1 deltas are atomically applied on top of the running config. Hostname becomes `cat9300x-day1`.
+
+**Stage 3 — Apply Day 2 (add routing + NTP)**
+
+```bash
+./apply-day-config.sh
+# When prompted, enter: 2
+```
+
+Result: OSPF process, additional NTP servers, and other day-2 deltas are atomically applied. Hostname becomes `cat9300x-day2`.
+
+**Stage 4 — Roll back to Day 0**
+
+```bash
+./apply-day-config.sh
+# When prompted, enter: 0
+```
+
+Result: full atomic replace back to the clean baseline. Day-1 and Day-2 additions are removed in a single transaction — no partial state, no reboot.
+
+### Useful flags
+
+```bash
+./apply-day-config.sh --list      # show all available POD-*-day*.cfg targets
+./apply-day-config.sh --no-run    # repoint the symlink only; skip the Ansible push
+```
+
+### Verify between stages (optional but recommended)
+
+```bash
+ansible-playbook -i inventory/hosts.yml playbooks/07_diff_preview_cli.yml
+```
+
+Expected after each `apply-day-config.sh` run: `Desired matches running (no diff)`.
+
+### If something goes wrong
+
+Ansible reports the failure in its standard `PLAY RECAP` (`failed=1`) and the script exits non-zero. Because this is an **atomic** replace, a failed push leaves the device on its previous running config — you'll never end up in a half-applied state.
+
+Troubleshooting checklist:
+
+1. Confirm POD id: `cat ~/PODID`
+2. Confirm target exists: `ls configs/desired/POD-*-day*.cfg`
+3. Check device reachability: `ansible-playbook -i inventory/hosts.yml playbooks/01_precheck.yml`
+4. Preview the diff: `ansible-playbook -i inventory/hosts.yml playbooks/07_diff_preview_cli.yml`
+5. Re-run verbosely: `ansible-playbook -vvv -i inventory/hosts.yml playbooks/06_atomic_push_cli.yml -e dry_run=false`
+6. Common payload issues in `configs/desired/POD-*-dayN.cfg`:
+   - close blocks with `exit`, **not** `end`
+   - do **not** include `netconf-yang` or `restconf` (those are day-0 bootstrap, already on the device)
+
+### Tips
+
+- Payload files (`POD-*-dayN.cfg`) must use `exit` to close every config block. `end` is rejected by the NETCONF CLI-RPC parser.
+- Do **not** put `netconf-yang` or `restconf` inside these payloads. Those are day-0 bootstrap commands and are already enabled on the device.
+- Each run produces `pre_atomic_*.cfg` and `post_atomic_*.cfg` snapshots under `configs/backups/c9300x-lab/` for audit.
+- If the device ever drifts, just `./apply-day-config.sh` → `0` to snap it back to baseline in a single transaction.
+
+---
+
 ## Playbook Reference
 
 ### CLI-RPC Workflow (Recommended)

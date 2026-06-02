@@ -1,4 +1,4 @@
-# Jinja Pod Generation Workflow
+# Generate New Day Configs for all Pods from a single source file
 
 Use this workflow when you have one source config and want to regenerate all pod files by changing only pod-specific VLAN values.
 
