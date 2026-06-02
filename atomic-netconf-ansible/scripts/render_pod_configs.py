@@ -119,7 +119,7 @@ def main() -> int:
     for pod in range(args.pod_start, args.pod_end + 1):
         pod_vlan = pod + 20
         rendered = template.render(pod_num=pod, pod_num_padded=f"{pod:02d}", pod_vlan=pod_vlan)
-        out_name = f"POD-{pod:02d}-{day_label}.cfg"
+        out_name = f"POD-{pod}-{day_label}.cfg"
         (output_dir / out_name).write_text(rendered, encoding="utf-8")
         rendered_count += 1
 

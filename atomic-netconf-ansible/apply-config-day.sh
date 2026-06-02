@@ -52,6 +52,12 @@ def parse_pod_id(raw: str) -> str:
         raise ValueError("PODID must not be empty.")
     if "/" in value or "\\" in value:
         raise ValueError("PODID contains invalid path separator characters.")
+
+    # Normalize to unpadded form: POD-03 -> POD-3, POD3 -> POD-3, 3 -> POD-3
+    import re
+    match = re.match(r"^POD-?(\d{1,2})$", value) or re.match(r"^(\d{1,2})$", value)
+    if match:
+        value = f"POD-{int(match.group(1))}"
     return value
 
 
