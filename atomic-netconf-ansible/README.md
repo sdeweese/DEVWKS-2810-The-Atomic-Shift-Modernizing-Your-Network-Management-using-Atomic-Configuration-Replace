@@ -111,7 +111,7 @@ Note: Your instructor will give you a unique pod number, IP, and credentials to 
 
 2. After clicking that button, a pop up should appear at the top of your Visual Studio Code window. Select the "Connect to Host" option from the dropdown menu.
 
-3. SSH to your unique pod using the credentials provided by your instructor in this format `ssh -p 443 auto@<YOUR_POD_IP>`. Example: `ssh -p 443 auto@10.1.1.5`
+3. SSH to your unique pod using the credentials provided by your instructor. Open a new terminal tab (pro tip, split the terminal window within Visual Studio Code to see the Cisco IOS XE device on one side and the workspace for running scripts on the other side) `ssh -p 443 auto@<YOUR_POD_IP>`. Example: `ssh -p 443 auto@10.1.1.5`. Recommended: once you're connected to your switch, type `terminal monitor` to see real-time logs.
 
 4. Navigate to the `DEVWKS-2810-The-Atomic-Shift-Modernizing-Your-Network-Management-using-Atomic-Configuration-Replace` directory.
 
@@ -271,27 +271,27 @@ Expected: `Desired matches running (no diff)`
 
 ---
 
-## Day 0 → Day 1 → Day 2 → Day 0 Cycle with `apply-day-config.sh`
+## Day 0 → Day 1 → Day 2 → Day 0 Cycle with `apply-config-day.sh`
 
 Once your baseline is captured and you're comfortable with the preview/push flow, the lab includes a helper that rotates the active desired config between three checkpoint files and runs the live atomic push for you:
 
-- `configs/desired/POD-<id>-day0.cfg` — clean baseline (starting state)
-- `configs/desired/POD-<id>-day1.cfg` — day-1 additions (e.g., interface descriptions, VLANs)
-- `configs/desired/POD-<id>-day2.cfg` — day-2 additions (e.g., OSPF, extra NTP servers)
+- `configs/desired/POD-<id>-day0.cfg` — clean baseline (starting state). Hostname `cat9300x-pod<id>a-sztp`, single user VLAN (pod# + 20).
+- `configs/desired/POD-<id>-day1.cfg` — access-layer additions. Hostname becomes `cat9300x-day1`; adds VLANs `311` and `700` to the VLAN list; moves a block of access ports to `switchport access vlan 311` with `switchport mode access`; adds two `description setting for vlan ...` comments on selected interfaces.
+- `configs/desired/POD-<id>-day2.cfg` — routing + time additions on top of day1. Hostname becomes `cat9300x-day2`; adds `router ospf 1` with `network 10.10.10.0 0.0.0.255 area 0`; sets `ntp source Vlan<pod#+20>`; adds NTP servers `10.1.7.2` and `10.11.13.10`.
 
-Your POD id comes from `cat ~/PODID` (e.g. `POD-13`). The script:
+Each pod has slightly different configs (the pod VLAN = pod# + 20) to support the lab flow. Your POD id comes from `cat ~/PODID` (e.g. `POD-13`). The script:
 
 1. Repoints the symlink `configs/desired/c9300x-lab.cfg` → `POD-<id>-day<N>.cfg`
 2. Runs `ansible-playbook -i inventory/hosts.yml playbooks/06_atomic_push_cli.yml -e dry_run=false`
 
-See [apply-day-config-readme.md](apply-day-config-readme.md) for full options (`--list`, `--no-run`).
+Run [`apply-config-day.sh`](./apply-config-day.sh) `--help` for full options (`--list`, `--no-run`).
 
 ### One-time setup
 
 ```bash
-cd /home/auto/iosxe-atomic-netconf-ansible/atomic-netconf-ansible
+cd DEVWKS-2810-The-Atomic-Shift-Modernizing-Your-Network-Management-using-Atomic-Configuration-Replace/atomic-netconf-ansible/
 # Make the script executable (this has been done for you)
-# chmod +x apply-day-config.sh
+# chmod +x apply-config-day.sh
 ```
 
 ### What you'll see when you run it
@@ -299,13 +299,18 @@ cd /home/auto/iosxe-atomic-netconf-ansible/atomic-netconf-ansible
 The script prints the symlink update, then streams the full `ansible-playbook` output (the same output you'd see running the playbook by hand):
 
 ```text
-$ ./apply-day-config.sh
+$ ./apply-config-day.sh 
 Detected PODID: POD-13
 Which day would you like to rotate to? (Simply type the number and then press ENTER)
-0) Day0
-1) Day1
-2) Day2
+For Day0, type 0
+For Day1, type 1
+For Day2, type 2
 Please Enter 0, 1, or 2: 1
+
+Starting config replace for Day 1...
+
+
+
 Updated: c9300x-lab.cfg -> POD-13-day1.cfg
 Running Ansible full-replace playbook...
 Command: ansible-playbook -i inventory/hosts.yml playbooks/06_atomic_push_cli.yml -e dry_run=false
@@ -331,44 +336,70 @@ Run the script once per stage and pick the day at the prompt. After each commit,
 **Stage 1 — Apply Day 0 (baseline)**
 
 ```bash
-./apply-day-config.sh
+./apply-config-day.sh
 # When prompted, enter: 0
 ```
 
-Result: device is reset to the clean POD baseline. Hostname becomes `cat9300x-day0` (or equivalent for your pod).
+Result: device is reset to the clean POD baseline. Hostname becomes `cat9300x-pod<id>a-sztp`.
 
-**Stage 2 — Apply Day 1 (add interface/VLAN config)**
+**Stage 2 — Apply Day 1 (access-layer VLAN/interface adds)**
 
 ```bash
-./apply-day-config.sh
+./apply-config-day.sh
 # When prompted, enter: 1
 ```
 
-Result: Day-1 deltas are atomically applied on top of the running config. Hostname becomes `cat9300x-day1`.
+Result: Day-1 deltas are atomically applied on top of the running config. Hostname becomes `cat9300x-day1`, VLANs `311` and `700` are added to the VLAN database, and a block of access ports are moved to `switchport access vlan 311` / `switchport mode access`. Verify on the device:
 
-**Stage 3 — Apply Day 2 (add routing + NTP)**
+```
+show vlan brief | include 311|700
+show running-config | section interface TenGigabit
+```
+
+**Stage 3 — Apply Day 2 (add OSPF routing + NTP)**
 
 ```bash
-./apply-day-config.sh
+./apply-config-day.sh
 # When prompted, enter: 2
 ```
 
-Result: OSPF process, additional NTP servers, and other day-2 deltas are atomically applied. Hostname becomes `cat9300x-day2`.
+Result: a single atomic transaction layers the day-2 deltas on top of day-1:
+
+- Hostname changes to `cat9300x-day2`.
+- `router ospf 1` is enabled with `network 10.10.10.0 0.0.0.255 area 0`.
+- NTP sourcing is pinned to the pod SVI: `ntp source Vlan<pod#+20>` (e.g. `Vlan33` for POD-13, `Vlan27` for POD-7).
+- Two NTP servers are added: `10.1.7.2` and `10.11.13.10`.
+
+Verify on the device after the commit:
+
+```
+show ip ospf | include Process|Router ID
+show ip ospf interface brief
+show ip protocols | section ospf
+show ntp associations
+show ntp status
+```
+
+Expected highlights:
+
+- `Routing Process "ospf 1"` appears in `show ip protocols`.
+- The interface in the `10.10.10.0/24` network shows up under `show ip ospf interface brief` in area 0.
+- `show ntp associations` lists `10.1.7.2` and `10.11.13.10` with the pod SVI as the source.
 
 **Stage 4 — Roll back to Day 0**
 
 ```bash
-./apply-day-config.sh
+./apply-config-day.sh
 # When prompted, enter: 0
 ```
 
-Result: full atomic replace back to the clean baseline. Day-1 and Day-2 additions are removed in a single transaction — no partial state, no reboot.
+Result: full atomic replace back to the clean baseline. Day-1 (access-port/VLAN) and Day-2 (OSPF + NTP) additions are removed in a single transaction — no partial state, no reboot. Hostname returns to `cat9300x-pod<id>a-sztp` and `show ip protocols` no longer lists OSPF.
 
 ### Useful flags
 
 ```bash
-./apply-day-config.sh --list      # show all available POD-*-day*.cfg targets
-./apply-day-config.sh --no-run    # repoint the symlink only; skip the Ansible push
+./apply-config-day.sh --list      # show all available POD-*-day*.cfg targets
+./apply-config-day.sh --no-run    # repoint the symlink only; skip the Ansible push
 ```
 
 ### Verify between stages (optional but recommended)
@@ -377,7 +408,7 @@ Result: full atomic replace back to the clean baseline. Day-1 and Day-2 addition
 ansible-playbook -i inventory/hosts.yml playbooks/07_diff_preview_cli.yml
 ```
 
-Expected after each `apply-day-config.sh` run: `Desired matches running (no diff)`.
+Expected after each `apply-config-day.sh` run: `Desired matches running (no diff)`.
 
 ### If something goes wrong
 
@@ -399,9 +430,7 @@ Troubleshooting checklist:
 - Payload files (`POD-*-dayN.cfg`) must use `exit` to close every config block. `end` is rejected by the NETCONF CLI-RPC parser.
 - Do **not** put `netconf-yang` or `restconf` inside these payloads. Those are day-0 bootstrap commands and are already enabled on the device.
 - Each run produces `pre_atomic_*.cfg` and `post_atomic_*.cfg` snapshots under `configs/backups/c9300x-lab/` for audit.
-- If the device ever drifts, just `./apply-day-config.sh` → `0` to snap it back to baseline in a single transaction.
-
----
+- If the device ever drifts, just `./apply-config-day.sh` → `0` to snap it back to baseline in a single transaction.
 
 ## Playbook Reference
 
@@ -439,4 +468,4 @@ Work with familiar IOS CLI text. The payload is delivered over NETCONF using the
 - Detailed walkthrough: [docs/quickstart.md](docs/quickstart.md)
 - Jinja pod generation workflow: [docs/jinja-pod-workflow.md](docs/jinja-pod-workflow.md)
 
-## Congrats! You've completed the Atomic Config Replace Workshop!!
+Congrats! You've completed the Atomic Config Replace Workshop!
