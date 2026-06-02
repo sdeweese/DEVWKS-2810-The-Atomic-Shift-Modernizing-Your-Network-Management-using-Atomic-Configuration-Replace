@@ -105,6 +105,8 @@ After enabling candidate datastore, NETCONF restarts automatically (~60 seconds)
 
 ### Lab Environment Setup
 
+<!-- for DevNet Workshop only 
+
 Note: Your instructor will give you a unique pod number, IP, and credentials to complete this lab. 
 
 1. On the laptop provided, use password 'cisco' to login.
@@ -120,7 +122,9 @@ If asked about adding a fingerprint, type yes
 Password for your pod is 
 `pandalab2026!`
 
-3. SSH to your unique pod using the credentials provided by your instructor. Open a new terminal tab (pro tip, split the terminal window within Visual Studio Code to see the Cisco IOS XE device on one side and the workspace for running scripts on the other side using 
+-->
+
+SSH to your unique pod using the credentials provided by your instructor. Open a new terminal tab (pro tip, split the terminal window within Visual Studio Code to see the Cisco IOS XE device on one side and the workspace for running scripts on the other side using 
 
 ```
 ssh admin@10.1.1.5
@@ -208,101 +212,14 @@ atomic-netconf-ansible/
 
 All commands are run from inside the extracted `DEVWKS-2810-The-Atomic-Shift-Modernizing-Your-Network-Management-using-Atomic-Configuration-Replace/atomic-netconf-ansible/` directory.
 
-### 1. Inventory & Credentials (Pre-Configured)
-
-The toolkit ships ready to run in any lab pod:
-
-- **Inventory** (`inventory/hosts.yml`): one host `c9300x-lab` at `10.1.1.5:830`
-- **Credentials** (`inventory/group_vars/all/vault.yml`): `admin` / `Cisco123`
-<!-- 
-No edits required for the standard lab environment. If you want to encrypt the vault:
-
-```bash
-ansible-vault encrypt inventory/group_vars/all/vault.yml
-# then append --ask-vault-pass to every ansible-playbook command
-``` -->
-
-### 2. Verify Device Readiness
-
-```bash
-ansible-playbook -i inventory/hosts.yml playbooks/01_precheck.yml
-```
-
-Checks: NETCONF connectivity, candidate datastore, atomic config support, IOS XE version.
-
-### 3. Capture Baseline
-
-```bash
-ansible-playbook -i inventory/hosts.yml playbooks/05_baseline_capture_cli.yml
-```
-
-Creates two files per device:
-- `configs/baseline/<hostname>/baseline.cfg`: Reference copy (don't edit)
-- `configs/desired/<hostname>.cfg`: **Your working copy (edit this)**
-
-### 4. Edit Desired Config
-
-Open `configs/desired/<hostname>.cfg` and make your changes using standard IOS CLI:
-
-```diff
- interface TenGigabitEthernet1/0/1
-+  description UPLINK-TO-DIST-SW
-   shutdown
-   switchport access vlan 30
- exit
-```
-
-> **This file is the complete device config.** Atomic config replace does a full replace. Anything you remove from this file will be removed from the device. Keep all physical interfaces.
-
-### 5. Preview Changes (Safe)
-
-```bash
-ansible-playbook -i inventory/hosts.yml playbooks/07_diff_preview_cli.yml
-```
-
-Stages to candidate, diffs against running, then **discards**. Device is never modified. Output shows unified diff:
-
-```
-+ (lines being added)
-- (lines being removed)
-  (unchanged context)
-```
-
-### 6. Push Changes
-
-```bash
-# Dry run (default): stage, diff, discard. Same as preview but also creates backup.
-# ansible-playbook -i inventory/hosts.yml playbooks/06_atomic_push_cli.yml
-
-# Live push: stage, diff, COMMIT, save to startup.
-ansible-playbook -i inventory/hosts.yml playbooks/06_atomic_push_cli.yml -e dry_run=false
-```
-
-The live push log includes:
-- **BEFORE**: Full running config captured via `get-modelled-config-clis` before staging
-- **DIFF**: Unified diff showing exactly what changes
-- **AFTER**: Full running config captured via `get-modelled-config-clis` after commit
-- Both before/after configs saved to `configs/backups/<hostname>/` as `pre_atomic_*.cfg` and `post_atomic_*.cfg`
-
-### 7. Verify
-
-Re-run preview to confirm no diff remains:
-
-```bash
-ansible-playbook -i inventory/hosts.yml playbooks/07_diff_preview_cli.yml
-```
-
-Expected: `Desired matches running (no diff)`
-
----
 
 ## Day 0 → Day 1 → Day 2 → Day 0 Cycle with `apply-config-day.sh`
 
 Once your baseline is captured and you're comfortable with the preview/push flow, the lab includes a helper that rotates the active desired config between three checkpoint files and runs the live atomic push for you:
 
 - `configs/desired/POD-<id>-day0.cfg` — clean baseline (starting state). Hostname `cat9300x-pod<id>a-sztp`, single user VLAN (pod# + 20).
-- `configs/desired/POD-<id>-day1.cfg` — access-layer additions. Hostname becomes `cat9300x-day1`; adds VLANs `311` and `700` to the VLAN list; moves a block of access ports to `switchport access vlan 311` with `switchport mode access`; adds two `description setting for vlan ...` comments on selected interfaces.
-- `configs/desired/POD-<id>-day2.cfg` — routing + time additions on top of day1. Hostname becomes `cat9300x-day2`; adds `router ospf 1` with `network 10.10.10.0 0.0.0.255 area 0`; sets `ntp source Vlan<pod#+20>`; adds NTP servers `10.1.7.2` and `10.11.13.10`.
+- `configs/desired/POD-<id>-day1.cfg` — access-layer additions. Hostname becomes `cat9300x-pod<id>-day1`; adds VLANs `311` and `700` to the VLAN list; moves a block of access ports to `switchport access vlan 311` with `switchport mode access`; adds two `description setting for vlan ...` comments on selected interfaces.
+- `configs/desired/POD-<id>-day2.cfg` — routing + time additions on top of day1. Hostname becomes `cat9300x-pod<id>-day2`; adds `router ospf 1` with `network 10.10.10.0 0.0.0.255 area 0`; sets `ntp source Vlan<pod#+20>`; adds NTP servers `10.1.7.2` and `10.11.13.10`.
 
 Each pod has slightly different configs (the pod VLAN = pod# + 20) to support the lab flow. Your POD id comes from `cat ~/PODID` (e.g. `POD-13`). The script:
 
@@ -385,7 +302,7 @@ Result: device is reset to the clean POD baseline. Hostname becomes `cat9300x-po
 ```
 
 Watch the `PLAY RECAP`. If it shows `failed=0`, the day-1 deltas committed cleanly:
-hostname is now `cat9300x-day1`, VLANs `311` and `700` are in the VLAN database, and
+hostname is now `cat9300x-pod<id>-day1`, VLANs `311` and `700` are in the VLAN database, and
 a block of access ports moved to `switchport access vlan 311` /
 `switchport mode access`. Verify on the device:
 
@@ -408,7 +325,7 @@ show running-config | include hostname
 ```
 
 The hostname is still the day-0 hostname (`cat9300x-pod<id>a-sztp`), not
-`cat9300x-day1`. No VLANs were added, no ports were moved. Nothing landed.
+`cat9300x-pod<id>-day1`. No VLANs were added, no ports were moved. Nothing landed.
 
 **Read the Ansible failure output** — the error message will quote the exact CLI line
 the device refused, typically with an `% Invalid input` marker or a parser error
@@ -441,7 +358,7 @@ confirm the day-1 state is live.
 
 Result: a single atomic transaction layers the day-2 deltas on top of day-1:
 
-- Hostname changes to `cat9300x-day2`.
+- Hostname changes to `cat9300x-pod<id>-day2`.
 - `router ospf 1` is enabled
 - NTP sourcing is pinned to the pod SVI: `ntp source Vlan<pod#+20>` (e.g. `Vlan33` for POD-13, `Vlan27` for POD-7).
 
