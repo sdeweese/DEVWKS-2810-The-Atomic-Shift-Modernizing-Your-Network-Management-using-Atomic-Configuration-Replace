@@ -107,18 +107,43 @@ After enabling candidate datastore, NETCONF restarts automatically (~60 seconds)
 
 Note: Your instructor will give you a unique pod number, IP, and credentials to complete this lab. 
 
-1. On the laptop provided, Open Visual Studio Code. In the bottom left corner, select the button that has two arrows facing each other. 
+1. On the laptop provided, use password 'cisco' to login.
 
-2. After clicking that button, a pop up should appear at the top of your Visual Studio Code window. Select the "Connect to Host" option from the dropdown menu.
+2. Open Visual Studio Code. Open a new Terminal Window. 
+Type 
 
-3. SSH to your unique pod using the credentials provided by your instructor. Open a new terminal tab (pro tip, split the terminal window within Visual Studio Code to see the Cisco IOS XE device on one side and the workspace for running scripts on the other side using `ssh auto@10.1.1.5` and `Cisco123` as the password. Recommended: once you're connected to your switch, type `terminal monitor` to see real-time logs.
+`ssh –p 443 auto@pod##-xelab.cisco.com`
+
+Relace ## is pod number on your desk. 
+Ex) Pod 5 will be: `ssh –p 443 auto@pod05-xelab.cisco.com`
+If asked about adding a fingerprint, type yes
+Password for your pod is 
+`pandalab2026!`
+
+3. SSH to your unique pod using the credentials provided by your instructor. Open a new terminal tab (pro tip, split the terminal window within Visual Studio Code to see the Cisco IOS XE device on one side and the workspace for running scripts on the other side using 
+
+```
+ssh admin@10.1.1.5
+```` 
+
+and password:
+
+```
+Cisco123
+```
+
+
+Recommended: once you're connected to your switch, type `terminal monitor` to see real-time logs.
+
+![Connect to your switch](../images/acr-split-screen.png)
 
 4. Navigate to the `DEVWKS-2810-The-Atomic-Shift-Modernizing-Your-Network-Management-using-Atomic-Configuration-Replace` directory.
 
    ```bash
    # 1. Clone the repository (this has already been done for you in the lab pod)
    #git clone https://github.com/jeremycohoe/iosxe-atomic-netconf-ansible.git
-   cd iosxe-atomic-netconf-ansible/atomic-netconf-ansible
+
+   cd DEVWKS-2810-The-Atomic-Shift-Modernizing-Your-Network-Management-using-Atomic-Configuration-Replace/atomic-netconf-ansible
 
    # 2. Confirm Ansible is available (lab pods normally ship with it)
    ansible --version
@@ -291,7 +316,7 @@ Run [`apply-config-day.sh`](./apply-config-day.sh) `--help` for full options (`-
 Ensure you are in the correct directory and make the script executable.
 
 ```bash
-cd DEVWKS-2810-The-Atomic-Shift-Modernizing-Your-Network-Management-using-Atomic-Configuration-Replace/atomic-netconf-ansible/
+cd ~/DEVWKS-2810-The-Atomic-Shift-Modernizing-Your-Network-Management-using-Atomic-Configuration-Replace/atomic-netconf-ansible/
 # Make the script executable (this has been done for you)
 # chmod +x apply-config-day.sh
 ```
@@ -301,7 +326,12 @@ cd DEVWKS-2810-The-Atomic-Shift-Modernizing-Your-Network-Management-using-Atomic
 The script prints the symlink update, then streams the full `ansible-playbook` output (the same output you'd see running the playbook by hand):
 
 ```text
-$ ./apply-config-day.sh 
+./apply-config-day.sh 
+```
+
+You should see an output similar to this
+
+```
 Detected PODID: POD-13
 Which day would you like to rotate to? (Simply type the number and then press ENTER)
 For Day0, type 0
@@ -326,8 +356,9 @@ TASK [Commit candidate to running] *********************************************
 changed: [c9300x-lab]
 
 PLAY RECAP *********************************************************************
-c9300x-lab : ok=12   changed=1    unreachable=0    failed=0    skipped=0 -->
+c9300x-lab : ok=12   changed=1    unreachable=0    failed=0    skipped=0 
 ```
+-->
 
 If you face an error, check the Ansible output for the specific error message. Common issues include syntax errors in the desired config or missing required configuration elements. Use the error message to debug the issue.
 
@@ -411,25 +442,21 @@ confirm the day-1 state is live.
 Result: a single atomic transaction layers the day-2 deltas on top of day-1:
 
 - Hostname changes to `cat9300x-day2`.
-- `router ospf 1` is enabled with `network 10.10.10.0 0.0.0.255 area 0`.
+- `router ospf 1` is enabled
 - NTP sourcing is pinned to the pod SVI: `ntp source Vlan<pod#+20>` (e.g. `Vlan33` for POD-13, `Vlan27` for POD-7).
-- Two NTP servers are added: `10.1.7.2` and `10.11.13.10`.
 
 Verify on the device after the commit:
 
 ```
-show ip ospf | include Process|Router ID
-show ip ospf interface brief
-show ip protocols | section ospf
-show ntp associations
-show ntp status
+sh run | s ospf
 ```
 
-Expected highlights:
+Should return
+```
+router ospf 1
+ network 10.10.10.0 0.0.0.255 area 0
+```
 
-- `Routing Process "ospf 1"` appears in `show ip protocols`.
-- The interface in the `10.10.10.0/24` network shows up under `show ip ospf interface brief` in area 0.
-- `show ntp associations` lists `10.1.7.2` and `10.11.13.10` with the pod SVI as the source.
 
 **Stage 4 — Roll back to Day 0**
 
