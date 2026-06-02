@@ -111,7 +111,7 @@ Note: Your instructor will give you a unique pod number, IP, and credentials to 
 
 2. After clicking that button, a pop up should appear at the top of your Visual Studio Code window. Select the "Connect to Host" option from the dropdown menu.
 
-3. SSH to your unique pod using the credentials provided by your instructor. Open a new terminal tab (pro tip, split the terminal window within Visual Studio Code to see the Cisco IOS XE device on one side and the workspace for running scripts on the other side) `ssh -p 443 auto@<YOUR_POD_IP>`. Example: `ssh -p 443 auto@10.1.1.5`. Recommended: once you're connected to your switch, type `terminal monitor` to see real-time logs.
+3. SSH to your unique pod using the credentials provided by your instructor. Open a new terminal tab (pro tip, split the terminal window within Visual Studio Code to see the Cisco IOS XE device on one side and the workspace for running scripts on the other side) `ssh -p 443 auto@<YOUR_POD_IP>`. Example: `ssh -p 443 auto@128.120.130.140`. Recommended: once you're connected to your switch, type `terminal monitor` to see real-time logs.
 
 4. Navigate to the `DEVWKS-2810-The-Atomic-Shift-Modernizing-Your-Network-Management-using-Atomic-Configuration-Replace` directory.
 
