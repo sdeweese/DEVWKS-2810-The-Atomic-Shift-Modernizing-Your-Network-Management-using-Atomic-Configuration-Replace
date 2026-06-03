@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +13,7 @@ REPO_DIR = Path(__file__).resolve().parent
 TARGETS_DIR = REPO_DIR / "configs" / "pod-targets"
 LINK_DIR = REPO_DIR / "configs" / "desired"
 LINK_NAME = "c9300x-lab.cfg"
+DAYS = (0, 1, 2)
 POD_DISCOVERY_CMD = "cat ~/PODID"
 ANSIBLE_CMD = [
     "ansible-playbook",
@@ -34,7 +37,19 @@ def current_target() -> str:
 def list_targets() -> None:
     print(f"Current {LINK_NAME} target: {current_target()}")
     print()
-    print(f"Available .cfg files in {TARGETS_DIR}:")
+    print(f"Pod day files currently staged in {LINK_DIR}:")
+
+    desired_files = sorted(
+        p.name for p in LINK_DIR.glob("*.cfg") if p.is_file() and p.name != LINK_NAME
+    )
+    if not desired_files:
+        print("  (none yet — run the script to populate)")
+    else:
+        for idx, filename in enumerate(desired_files, start=1):
+            print(f"  {idx:2d}) {filename}")
+
+    print()
+    print(f"All available pod source files in {TARGETS_DIR}:")
 
     cfg_files = sorted(p.name for p in TARGETS_DIR.glob("*.cfg") if p.is_file())
 
@@ -86,26 +101,69 @@ def discover_pod_id() -> str:
     return pod
 
 
-def resolve_target_filename(pod: str, day: int) -> str:
-    candidates = [
-        f"{pod}-day{day}.cfg",
-    ]
+def sync_pod_files(pod: str, force: bool = False) -> list[tuple[str, str]]:
+    """Copy POD-N-day{0,1,2}.cfg from pod-targets/ into desired/.
 
-    for candidate in candidates:
-        if (TARGETS_DIR / candidate).is_file():
-            return candidate
+    Copies a file when it is missing in desired/ OR when the pod-targets/
+    source is newer than the copy in desired/. Pass force=True to always
+    refresh all three day files. Returns a list of (filename, status) tuples
+    in DAYS order.
+    """
+    LINK_DIR.mkdir(parents=True, exist_ok=True)
+    results: list[tuple[str, str]] = []
+    for day in DAYS:
+        filename = f"{pod}-day{day}.cfg"
+        src = TARGETS_DIR / filename
+        dst = LINK_DIR / filename
+        if not src.is_file():
+            results.append((filename, "source missing"))
+            continue
 
-    joined = ", ".join(candidates)
-    raise FileNotFoundError(
-        f"No target file found for POD {pod} day {day} in {TARGETS_DIR}. Checked: {joined}"
-    )
+        if force:
+            shutil.copy2(src, dst)
+            results.append((filename, "refreshed"))
+        elif not dst.exists():
+            shutil.copy2(src, dst)
+            results.append((filename, "copied (new)"))
+        elif src.stat().st_mtime > dst.stat().st_mtime:
+            shutil.copy2(src, dst)
+            results.append((filename, "copied (updated)"))
+        else:
+            results.append((filename, "up-to-date"))
+    return results
+
+
+def build_menu(filenames: list[str]) -> list[tuple[int, str]]:
+    """Assign selection keys to filenames.
+
+    Files whose name contains ``dayN`` use ``N`` as their key (so day0->0,
+    day1->1, etc.) and are listed first in ascending day order. Any other
+    files are appended after with incremental keys starting at
+    ``max(day#)+1`` (or 0 if no day files).
+    """
+    day_files: list[tuple[int, str]] = []
+    other_files: list[str] = []
+    for fn in filenames:
+        match = re.search(r"day(\d+)", fn, re.IGNORECASE)
+        if match:
+            day_files.append((int(match.group(1)), fn))
+        else:
+            other_files.append(fn)
+
+    day_files.sort(key=lambda kv: kv[0])
+    entries: list[tuple[int, str]] = list(day_files)
+    next_key = (max(k for k, _ in day_files) + 1) if day_files else 0
+    for fn in sorted(other_files):
+        entries.append((next_key, fn))
+        next_key += 1
+    return entries
 
 
 def set_target(target_file: str) -> None:
     if target_file == LINK_NAME:
         raise ValueError(f"Target cannot be {LINK_NAME} itself.")
 
-    target_path = TARGETS_DIR / target_file
+    target_path = LINK_DIR / target_file
     if not target_path.is_file():
         raise FileNotFoundError(f"File not found: {target_path}")
 
@@ -116,9 +174,8 @@ def set_target(target_file: str) -> None:
             raise IsADirectoryError(f"Cannot replace directory: {link_path}")
         link_path.unlink()
 
-    # Relative symlink so it survives moves of the repo
-    relative_target = Path("..") / TARGETS_DIR.name / target_file
-    link_path.symlink_to(relative_target)
+    # Relative symlink within desired/ so it survives moves of the repo
+    link_path.symlink_to(Path(target_file))
     print(f"Updated: {LINK_NAME} -> {current_target()}")
 
 
@@ -135,25 +192,52 @@ def run_ansible_push() -> None:
         raise RuntimeError(f"Ansible playbook failed with exit code {exc.returncode}.") from exc
 
 
-def interactive_select(skip_ansible_run: bool) -> None:
+def interactive_select(skip_ansible_run: bool, force_refresh: bool = False) -> None:
     pod = discover_pod_id()
 
-    print("Which day would you like to rotate to? (Simply type the number and then press ENTER)", file=sys.stderr, flush=True)
-    print("For Day0, type 0", file=sys.stderr, flush=True)
-    print("For Day1, type 1", file=sys.stderr, flush=True)
-    print("For Day2, type 2", file=sys.stderr, flush=True)
-    sys.stderr.write("Please Enter 0, 1, or 2: ")
-    sys.stderr.flush()
-    day_input = input().strip()
-    if day_input not in {"0", "1", "2"}:
-        raise ValueError("Invalid selection. Please enter 0, 1, or 2.")
+    print(f"Syncing {pod} day files into configs/desired/ ...", file=sys.stderr, flush=True)
+    sync_results = sync_pod_files(pod, force=force_refresh)
 
-    day = int(day_input, 10)
-    target_file = resolve_target_filename(pod, day)
+    staged = [(fn, status) for fn, status in sync_results if (LINK_DIR / fn).is_file()]
+    if not staged:
+        raise FileNotFoundError(
+            f"No day files available for {pod} in {LINK_DIR} (sources missing in {TARGETS_DIR})."
+        )
+
+    menu = build_menu([fn for fn, _ in staged])
+    status_by_name = dict(staged)
+
+    print("", file=sys.stderr, flush=True)
+    print(
+        "Which day would you like to rotate to? (Type the number and press ENTER)",
+        file=sys.stderr,
+        flush=True,
+    )
+    name_width = max(len(fn) for _, fn in menu)
+    for key, fn in menu:
+        print(
+            f"  {key}) {fn.ljust(name_width)}  [{status_by_name[fn]}]",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    valid_keys = {key: fn for key, fn in menu}
+    valid_display = ", ".join(str(k) for k in valid_keys)
+    sys.stderr.write(f"Please enter {valid_display}: ")
+    sys.stderr.flush()
+    raw = input().strip()
+    try:
+        choice = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"Invalid selection {raw!r}. Valid options: {valid_display}.") from exc
+    if choice not in valid_keys:
+        raise ValueError(f"Invalid selection {choice}. Valid options: {valid_display}.")
+
+    target_file = valid_keys[choice]
     set_target(target_file)
 
     print("", file=sys.stderr, flush=True)
-    print(f"Starting config replace for Day {day}...", file=sys.stderr, flush=True)
+    print(f"Starting config replace using {target_file} ...", file=sys.stderr, flush=True)
     print("", file=sys.stderr, flush=True)
 
     if not skip_ansible_run:
@@ -169,6 +253,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-run",
         action="store_true",
         help="Update symlink only and skip running Ansible playbook",
+    )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Force re-copy of POD-N-day{0,1,2}.cfg from pod-targets/ into desired/ even if up-to-date",
     )
     return parser
 
@@ -186,7 +275,7 @@ def main() -> int:
             list_targets()
             return 0
 
-        interactive_select(skip_ansible_run=args.no_run)
+        interactive_select(skip_ansible_run=args.no_run, force_refresh=args.refresh)
         return 0
     except (ValueError, FileNotFoundError, IsADirectoryError, RuntimeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
