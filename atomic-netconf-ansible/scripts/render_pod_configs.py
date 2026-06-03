@@ -77,10 +77,26 @@ def detect_day_label(source_path: Path, override: str | None) -> str:
     return match.group(1)
 
 
-def build_template(source_text: str, source_vlan: int) -> str:
+def build_template(source_text: str, source_vlan: int, source_pod: int) -> str:
     template = source_text
     template = template.replace(f"Vlan{source_vlan}", "Vlan{{ pod_vlan }}")
     template = template.replace(f"vlan {source_vlan}", "vlan {{ pod_vlan }}")
+
+    # Hostname rewrites — keep them per-pod so each rendered file is uniquely identifiable.
+    #   cat9300x-pod<source_pod>...   -> cat9300x-pod{{ pod_num }}...
+    #     (covers day0 style like "cat9300x-pod13a-sztp")
+    #   cat9300x-day<N>                -> cat9300x-pod{{ pod_num }}-day<N>
+    #     (covers day1/day2 style like "cat9300x-day1")
+    template = re.sub(
+        rf"\bcat9300x-pod{source_pod}(?!\d)",
+        "cat9300x-pod{{ pod_num }}",
+        template,
+    )
+    template = re.sub(
+        r"\bcat9300x-day(\d+)\b",
+        r"cat9300x-pod{{ pod_num }}-day\1",
+        template,
+    )
     return template
 
 
@@ -102,7 +118,7 @@ def main() -> int:
     source_vlan = args.source_pod + 20
 
     source_text = source_path.read_text(encoding="utf-8")
-    template_text = build_template(source_text, source_vlan)
+    template_text = build_template(source_text, source_vlan, args.source_pod)
 
     if args.template_out:
         template_path = Path(args.template_out)
