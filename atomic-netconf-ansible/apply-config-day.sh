@@ -195,7 +195,7 @@ def run_ansible_push() -> None:
 def interactive_select(skip_ansible_run: bool, force_refresh: bool = False) -> None:
     pod = discover_pod_id()
 
-    print(f"Syncing {pod} day files into configs/desired/ ...", file=sys.stderr, flush=True)
+    # print(f"Syncing {pod} day files into configs/desired/ ...", file=sys.stderr, flush=True)
     sync_results = sync_pod_files(pod, force=force_refresh)
 
     staged = [(fn, status) for fn, status in sync_results if (LINK_DIR / fn).is_file()]
@@ -205,7 +205,6 @@ def interactive_select(skip_ansible_run: bool, force_refresh: bool = False) -> N
         )
 
     menu = build_menu([fn for fn, _ in staged])
-    status_by_name = dict(staged)
 
     print("", file=sys.stderr, flush=True)
     print(
@@ -213,13 +212,8 @@ def interactive_select(skip_ansible_run: bool, force_refresh: bool = False) -> N
         file=sys.stderr,
         flush=True,
     )
-    name_width = max(len(fn) for _, fn in menu)
     for key, fn in menu:
-        print(
-            f"  {key}) {fn.ljust(name_width)}  [{status_by_name[fn]}]",
-            file=sys.stderr,
-            flush=True,
-        )
+        print(f"  {key}) {fn}", file=sys.stderr, flush=True)
 
     valid_keys = {key: fn for key, fn in menu}
     valid_display = ", ".join(str(k) for k in valid_keys)

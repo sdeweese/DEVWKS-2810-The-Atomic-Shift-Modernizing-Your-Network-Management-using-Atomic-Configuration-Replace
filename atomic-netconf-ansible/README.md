@@ -197,7 +197,11 @@ atomic-netconf-ansible/
 │
 ├── configs/
 │   ├── baseline/<hostname>/baseline.cfg     # Reference configs (auto-generated, don't edit)
-│   ├── desired/<hostname>.cfg               # Desired configs (EDIT THESE)
+│   ├── pod-targets/POD-<id>-day{0,1,2}.cfg  # Per-pod source-of-truth day files (version-controlled)
+│   ├── desired/<hostname>.cfg               # Active desired config the playbook reads
+│   │                                        #   apply-config-day.sh copies POD-<id>-day*.cfg
+│   │                                        #   from pod-targets/ into here, then points the
+│   │                                        #   c9300x-lab.cfg symlink at the chosen day file
 │   └── backups/<hostname>/                  # Pre/post-commit backups (auto-generated)
 │       ├── pre_atomic_*.cfg                    #   Running config before commit
 │       └── post_atomic_*.cfg                   #   Running config after commit
@@ -215,7 +219,11 @@ All commands are run from inside the extracted `DEVWKS-2810-The-Atomic-Shift-Mod
 
 ## Day 0 → Day 1 → Day 2 → Day 0 Cycle with `apply-config-day.sh`
 
-Once your baseline is captured and you're comfortable with the preview/push flow, the lab includes a helper that rotates the active desired config between three checkpoint files and runs the live atomic push for you:
+Once your baseline is captured and you're comfortable with the preview/push flow, the lab includes a helper that rotates the active desired config between three checkpoint files and runs the live atomic push for you.
+
+The checkpoint files for every pod are version-controlled in `configs/pod-targets/` (`POD-<id>-day0.cfg`, `POD-<id>-day1.cfg`, `POD-<id>-day2.cfg`). On every run, the script **copies your pod's three day files from `configs/pod-targets/` into `configs/desired/`** (only if a copy is missing or the source in `pod-targets/` is newer than the existing copy — pass `--refresh` to force a fresh copy of all three). The files inside `configs/desired/` are then the ones the script actually cycles through, and the `configs/desired/c9300x-lab.cfg` symlink (which the Ansible playbook reads) points at the chosen day file inside `configs/desired/`.
+
+What each day looks like (using your POD id):
 
 - `configs/desired/POD-<id>-day0.cfg` — clean baseline (starting state). Hostname `cat9300x-pod<id>a-sztp`, single user VLAN (pod# + 20).
 - `configs/desired/POD-<id>-day1.cfg` — access-layer additions. Hostname becomes `cat9300x-pod<id>-day1`; adds VLANs `311` and `700` to the VLAN list; moves a block of access ports to `switchport access vlan 311` with `switchport mode access`; adds two `description setting for vlan ...` comments on selected interfaces.
@@ -223,10 +231,11 @@ Once your baseline is captured and you're comfortable with the preview/push flow
 
 Each pod has slightly different configs (the pod VLAN = pod# + 20) to support the lab flow. Your POD id comes from `cat ~/PODID` (e.g. `POD-13`). The script:
 
-1. Repoints the symlink `configs/desired/c9300x-lab.cfg` → `POD-<id>-day<N>.cfg`
-2. Runs `ansible-playbook -i inventory/hosts.yml playbooks/06_atomic_push_cli.yml -e dry_run=false`
+1. Copies `configs/pod-targets/POD-<id>-day{0,1,2}.cfg` into `configs/desired/` (skipping any that are already up-to-date).
+2. Repoints the symlink `configs/desired/c9300x-lab.cfg` → `configs/desired/POD-<id>-day<N>.cfg`.
+3. Runs `ansible-playbook -i inventory/hosts.yml playbooks/06_atomic_push_cli.yml -e dry_run=false`.
 
-Run [`apply-config-day.sh`](./apply-config-day.sh) `--help` for full options (`--list`, `--no-run`).
+Run [`apply-config-day.sh`](./apply-config-day.sh) `--help` for full options (`--list`, `--no-run`, `--refresh`).
 
 ### One-time setup
 
@@ -250,13 +259,14 @@ You should see an output similar to this
 
 ```
 Detected PODID: POD-13
-Which day would you like to rotate to? (Simply type the number and then press ENTER)
-For Day0, type 0
-For Day1, type 1
-For Day2, type 2
-Please Enter 0, 1, or 2: 1
 
-Starting config replace for Day 1...
+Which day would you like to rotate to? (Type the number and press ENTER)
+  0) POD-13-day0.cfg
+  1) POD-13-day1.cfg
+  2) POD-13-day2.cfg
+Please enter 0, 1, 2: 1
+
+Starting config replace using POD-13-day1.cfg ...
 ```
 
 
@@ -331,12 +341,14 @@ The hostname is still the day-0 hostname (`cat9300x-pod<id>a-sztp`), not
 the device refused, typically with an `% Invalid input` marker or a parser error
 pointing at the bad keyword.
 
-**Fix the desired config:** open `configs/pod-targets/POD-<id>-day1.cfg` (or follow
+**Fix the desired config:** open the copy at `configs/desired/POD-<id>-day1.cfg` (or follow
 the symlink at `configs/desired/c9300x-lab.cfg`), locate the offending line, correct
-or remove it, and save.
+or remove it, and save. The source-of-truth file lives at
+`configs/pod-targets/POD-<id>-day1.cfg`; if you edit there instead, re-run the script
+so the newer source gets copied into `configs/desired/` (or pass `--refresh`).
 
 > Tip: a quick way to spot what changed in day-1 is to diff against day-0:
-> `diff configs/pod-targets/POD-<id>-day0.cfg configs/pod-targets/POD-<id>-day1.cfg`.
+> `diff configs/desired/POD-<id>-day0.cfg configs/desired/POD-<id>-day1.cfg`.
 > One of the new lines is the culprit.
 
 Re-run the push:
@@ -387,8 +399,9 @@ Result: full atomic replace back to the clean baseline. Day-1 (access-port/VLAN)
 ### Useful flags
 
 ```bash
-./apply-config-day.sh --list      # show all available POD-*-day*.cfg targets
-./apply-config-day.sh --no-run    # repoint the symlink only; skip the Ansible push
+./apply-config-day.sh --list      # show staged files in desired/ and all sources in pod-targets/
+./apply-config-day.sh --no-run    # update the symlink only; skip the Ansible push
+./apply-config-day.sh --refresh   # force re-copy POD-<id>-day{0,1,2}.cfg from pod-targets/ into desired/
 ```
 
 ### Verify between stages (optional but recommended)
